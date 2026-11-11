@@ -41,16 +41,15 @@ erDiagram
   users ||--o{ user_roles : has
   users ||--o{ museum_admins : manages
   museums ||--o{ museum_admins : assigned
-  museums ||--o{ media_assets : owns
+  museums ||--o{ media_assets : scopes
   museums ||--o{ artifacts : contains
-  artifacts ||--o{ media_assets : has
   museums ||--o{ ticket_types : offers
+  museums ||--o{ ticket_orders : hosts
   ticket_orders ||--|{ ticket_order_items : includes
   ticket_types ||--o{ ticket_order_items : selected
   users ||--o{ ticket_orders : buys
   ticket_orders ||--o| ticket_invoices : billed
   museums ||--o{ souvenir_products : sells
-  souvenir_products ||--o{ media_assets : has
   users ||--o{ carts : owns
   carts ||--o{ cart_items : contains
   souvenir_products ||--o{ cart_items : selected
@@ -81,6 +80,8 @@ erDiagram
   shop_invoices { uuid id PK }
 ```
 
+`media_assets` dùng khóa ngoại đa hình (`entity_type`, `entity_id`) nên **không thể** khai báo FK tới `artifacts`/`souvenir_products`; các quan hệ này chỉ là quan hệ logic và phải được bảo vệ bằng trigger kiểm tra tồn tại + cùng `museum_id`, không phải bằng FK. Tương tự, `users ||--|| auth_users` là quan hệ 1-1 bắt buộc ở tầng Auth, còn bảng `users` không chứa email/mật khẩu.
+
 ## 4. Quy ước chung
 
 Trừ khi ghi khác, các bảng có:
@@ -100,6 +101,7 @@ updated_at timestamptz not null default now()
 | `app_role` | `normal_user`, `admin_user` |
 | `publication_status` | `draft`, `published`, `archived` |
 | `media_type` | `image`, `video` |
+| `media_entity_type` | `artifact`, `souvenir`, `museum` |
 | `ticket_order_status` | `pending`, `confirmed`, `cancelled`, `refunded` |
 | `ticket_item_status` | `valid`, `used`, `cancelled`, `refunded` |
 | `payment_status` | `unpaid`, `paid`, `failed`, `refunded` |
@@ -140,7 +142,7 @@ Bảng membership thể hiện admin nào được quản lý bảo tàng nào.
 | `museum_id` | `uuid` | Không | PK ghép, FK `museums(id)` `ON DELETE CASCADE` |
 | `user_id` | `uuid` | Không | PK ghép, FK `users(id)` `ON DELETE CASCADE` |
 | `status` | `admin_membership_status` | Không | Mặc định `active` |
-| `assigned_by` | `uuid` | Có | FK `users(id)`; người cấp quyền |
+| `assigned_by` | `uuid` | Có | FK `users(id)` `ON DELETE SET NULL`; người cấp quyền |
 | `assigned_at` | `timestamptz` | Không | Mặc định `now()` |
 | `revoked_at` | `timestamptz` | Có | Thời điểm thu hồi |
 
@@ -170,7 +172,7 @@ Admin chỉ được tạo/sửa/xóa bảo tàng mà họ có quyền quản l�
 | Cột | Kiểu | Null | Ràng buộc / mô tả |
 |---|---|---:|---|
 | `id` | `uuid` | Không | PK |
-| `museum_id` | `uuid` | Không | FK `museums(id)` `ON DELETE CASCADE` |
+| `museum_id` | `uuid` | Không | FK `museums(id)` `ON DELETE RESTRICT` |
 | `name` | `text` | Không | Tên hiện vật |
 | `description` | `text` | Có | Mô tả công khai |
 | `period` | `text` | Có | Niên đại/thời kỳ |
@@ -187,11 +189,11 @@ Dùng chung cho museum, artifact và souvenir. Một asset chỉ có một owner
 |---|---|---:|---|
 | `id` | `uuid` | Không | PK |
 | `museum_id` | `uuid` | Không | FK `museums(id)`; dùng để kiểm tra scope RLS |
-| `entity_type` | `text` | Không | `artifact`, `souvenir` hoặc `museum` |
+| `entity_type` | `media_entity_type` | Không | Enum `artifact`, `souvenir`, `museum` |
 | `entity_id` | `uuid` | Không | ID bản ghi thuộc `entity_type` |
 | `media_type` | `media_type` | Không | `image` hoặc `video` |
 | `storage_bucket` | `text` | Không | Bucket Supabase Storage |
-| `storage_path` | `text` | Không | Path object, unique trong bucket |
+| `storage_path` | `text` | Không | Path object; `UNIQUE (storage_bucket, storage_path)` |
 | `mime_type` | `text` | Không | MIME type đã kiểm tra ở backend |
 | `sort_order` | `integer` | Không | Mặc định `0` |
 | `is_primary` | `boolean` | Không | Mặc định `false` |
@@ -241,7 +243,7 @@ Không nhận URL tùy ý từ client để nhúng trực tiếp. Backend kiểm
 | `unit_price` | `numeric(12,2)` | Không | Snapshot giá lúc mua |
 | `line_total` | `numeric(12,2)` | Không | Server tính |
 | `status` | `ticket_item_status` | Không | Mặc định `valid` |
-| `entry_code` | `text` | Có | Mã/QR, unique nếu phát hành |
+| `entry_code` | `text` | Có | Mã/QR do server sinh; unique qua partial unique index `WHERE entry_code IS NOT NULL` |
 | `valid_on` | `date` | Có | Ngày sử dụng nếu nghiệp vụ bật |
 | `created_at`, `updated_at` | `timestamptz` | Không | Audit timestamp |
 
@@ -285,9 +287,11 @@ FK và trigger phải bảo đảm `ticket_type_id` thuộc đúng `museum_id` c
 | Cột | Kiểu | Null | Ràng buộc / mô tả |
 |---|---|---:|---|
 | `id` | `uuid` | Không | PK |
-| `user_id` | `uuid` | Không | UNIQUE FK `users(id)` `ON DELETE CASCADE` |
+| `user_id` | `uuid` | Không | FK `users(id)` `ON DELETE CASCADE` |
 | `status` | `cart_status` | Không | Mặc định `active` |
 | `created_at`, `updated_at` | `timestamptz` | Không | Audit timestamp |
+
+Mỗi user chỉ có tối đa một cart `active`; ràng buộc là partial unique index `UNIQUE (user_id) WHERE status = 'active'` (không phải `UNIQUE (user_id)` toàn bảng), nếu không cart đã `converted` sẽ chặn việc tạo cart mới. Sau khi checkout, cart cũ giữ trạng thái `converted` và lần mua sau tạo cart `active` mới.
 
 ### `cart_items`
 
@@ -350,7 +354,9 @@ Unique constraint: `UNIQUE (cart_id, product_id)`. Cart không giữ giá cố �
 - `users.id` tham chiếu `auth.users.id`; trigger tạo profile và `normal_user` ngay sau khi Auth user được tạo.
 - `museum_admins` có PK ghép `(museum_id, user_id)` và index thêm theo `(user_id, status)`.
 - Thêm index cho `artifacts(museum_id, status, created_at)`, `ticket_types(museum_id, is_available)`, `ticket_orders(user_id, created_at desc)`, `ticket_order_items(ticket_order_id)`, `souvenir_products(museum_id, status, created_at)`, `cart_items(cart_id)`, `shop_orders(user_id, created_at desc)` và `shop_order_items(order_id)`.
-- Có partial index cho nội dung public, ví dụ `museums(slug) WHERE status = 'published'` và `souvenir_products(museum_id) WHERE status = 'published'`.
+- Có partial index cho nội dung public, ví dụ `souvenir_products(museum_id) WHERE status = 'published'`. `museums.slug` đã là `UNIQUE` toàn bảng nên không cần partial index theo `status`; index chỉ phục vụ lọc public là `museums(status, created_at)`.
+- `carts` cần partial unique index `UNIQUE (user_id) WHERE status = 'active'` (mỗi user tối đa một cart active) thay vì unique toàn bảng; `ticket_order_items.entry_code` cần partial unique index `WHERE entry_code IS NOT NULL`.
+- `media_assets` cần `UNIQUE (storage_bucket, storage_path)` và partial unique index `(entity_type, entity_id) WHERE is_primary` để mỗi entity chỉ có một media chính; index `(museum_id, entity_type, entity_id, sort_order)` phục vụ đọc danh sách media.
 - `slug`, `invoice_number` và `sku` phải unique theo quy tắc nghiệp vụ. SKU có thể dùng unique index `WHERE sku IS NOT NULL`.
 - Mọi quantity phải dương; giá, phí và tổng tiền không âm.
 - Xóa museum/product/ticket type đã phát sinh giao dịch nên bị chặn hoặc chuyển sang `archived`; không cascade làm mất lịch sử hóa đơn.
