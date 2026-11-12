@@ -1,10 +1,11 @@
 # Database Design (Demo) — Museum Management System
 
-Supabase/Postgres demo. Not production: fake payments, VND only, no refunds, no audit log, no account deletion.
+Postgres (Supabase-hosted) + Drizzle ORM demo using an application-centric Express.js + TypeScript backend and Supabase Auth. Not production: fake payments, VND only, no refunds, no audit log, no account deletion.
 
 ## 1. Rules
 
-- Client → Supabase with the publishable key. RLS is the only authorization layer. Multi-row writes go through `SECURITY DEFINER` RPCs; clients never write orders, order items, invoices, or entry codes directly.
+- **Application-centric data access:** Express connects directly to Postgres via `DATABASE_URL` using Drizzle ORM. All authorization, validation, and multi-row transactional writes live in Express middleware and services, not in PostgREST (`/rest/v1`) or PL/pgSQL RPCs.
+- **Defense-in-depth on `public` schema:** Direct client access via PostgREST (`/rest/v1`) is not part of the API. Tables keep RLS enabled (`.enableRLS()` in `src/db/schema/`) with **no public client policies**, blocking unmediated PostgREST reads/writes while Express operates over `DATABASE_URL`.
 - One cart and one order belong to one museum.
 - A ticket purchase is one order with `visit_date`, `time_slot`, one `entry_code`, and any number of ticket types. Slots are a fixed list; there is no capacity limit.
 - Admins manage only museums where they have an `active` membership **and** the `admin_user` role. They cannot change totals, payment status, or issue refunds.
@@ -15,7 +16,7 @@ Supabase/Postgres demo. Not production: fake payments, VND only, no refunds, no 
 
 - Schema `public`; UUID PKs (`gen_random_uuid()`); `timestamptz` UTC; money `numeric(12,2)`.
 - Every table has `id`, `created_at`, `updated_at`, except join tables (`user_roles`, `museum_admins`) and invoice tables (which use `issued_at`).
-- `updated_at` is maintained by a trigger.
+- `updated_at` is maintained by a DB trigger (or Drizzle `$onUpdate` consistently across all server writes).
 - `currency` is `text` default `'VND'` with `CHECK (currency = 'VND')`.
 - FKs declare `ON DELETE`. Columns marked “nullable” are optional; everything else is `NOT NULL`.
 
@@ -72,7 +73,7 @@ erDiagram
 **`media_assets`** — `id`; `museum_id` FK `museums(id)` cascade; `entity_type` `media_entity_type`; `entity_id` uuid; `media_type`; `storage_bucket`; `storage_path`; `mime_type`; `sort_order` default 0; `is_primary` default false; `created_by` FK `users(id)` set null (nullable); timestamps.
 
 - Unique `(storage_bucket, storage_path)`; partial unique `(entity_type, entity_id) WHERE is_primary`.
-- No FK is possible for `(entity_type, entity_id)`. A trigger checks the entity exists and belongs to the same `museum_id`.
+- No FK is possible for `(entity_type, entity_id)`. Express services (and optionally a DB trigger) verify the target entity exists and belongs to the same `museum_id`.
 
 **`ticket_types`** — `id`; `museum_id` FK `museums(id)` restrict; `name`; `description` (nullable); `price` `CHECK (price >= 0)`; `currency`; `is_available` default true; timestamps.
 
@@ -84,7 +85,7 @@ erDiagram
 
 **`carts`** — `id`; `user_id` FK `users(id)` cascade; `museum_id` FK `museums(id)` restrict; `status` default `active`; timestamps. Partial unique `(user_id, museum_id) WHERE status = 'active'`.
 
-**`cart_items`** — `id`; `cart_id` FK `carts(id)` cascade; `product_id` FK `souvenir_products(id)` restrict; `quantity` `CHECK (quantity > 0)`; timestamps. Unique `(cart_id, product_id)`; a trigger requires the product to belong to the cart's museum.
+**`cart_items`** — `id`; `cart_id` FK `carts(id)` cascade; `product_id` FK `souvenir_products(id)` restrict; `quantity` `CHECK (quantity > 0)`; timestamps. Unique `(cart_id, product_id)`; Express services (and optionally a DB trigger) require the product to belong to the cart's museum.
 
 **`shop_orders`** — `id`; `user_id` FK `users(id)` restrict; `museum_id` FK `museums(id)` restrict; `status` default `pending`; `payment_status` default `unpaid`; `subtotal` `CHECK (subtotal >= 0)`; `shipping_fee` default 0 `CHECK (shipping_fee >= 0)`; `total_amount` generated always as `(subtotal + shipping_fee)` stored; `currency`; `shipping_name`; `shipping_phone`; `shipping_address`; `shipping_city` (nullable); timestamps.
 
@@ -99,74 +100,68 @@ erDiagram
 - Partial unique: `carts(user_id, museum_id) WHERE status = 'active'`; `media_assets(entity_type, entity_id) WHERE is_primary`; `artifacts(museum_id, inventory_code) WHERE inventory_code IS NOT NULL`; `souvenir_products(museum_id, sku) WHERE sku IS NOT NULL`.
 - `ticket_orders.entry_code` is `UNIQUE`; multiple `NULL`s are allowed.
 - Quantities are positive; prices, fees, and totals are non-negative.
-- Status transitions are enforced in the RPCs, not by CHECKs.
+- Status transitions are enforced in Express services, not by CHECKs.
 
-## 7. Auth and RLS
+## 7. Auth and Authorization
 
-1. Supabase Auth creates `auth.users`.
-2. A trigger creates `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING`.
+1. Supabase Auth creates and manages `auth.users`.
+2. An `auth.users` signup trigger (or idempotent provisioning on first authenticated Express request) creates `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING`.
 3. The `super_admin` creates museums and assigns `admin_user` + `museum_admins`.
-4. RLS checks the database, not JWT claims, so role changes apply immediately.
-
-RLS is enabled on every table. Helpers live in a `private` schema, are `SECURITY DEFINER` with `search_path = ''`, and are granted only to `authenticated`:
-
-- `private.is_super_admin()`
-- `private.can_manage_museum(museum_id)` — `super_admin`, or an `active` membership **plus** the `admin_user` role.
+4. Express verifies the caller's Bearer JWT via Supabase Auth (`supabase.auth.getUser(token)`) and queries `user_roles` and `museum_admins` from Postgres per request, so role/membership changes apply immediately.
 
 | Data | `anon` | `normal_user` | `admin_user` | `super_admin` |
 |---|---|---|---|---|
-| Published museums/artifacts/products and available ticket types | SELECT | SELECT | SELECT | ALL |
-| Draft/archived catalog | — | — | SELECT + write in managed museums | ALL |
-| Profile | — | read/update own | same | read all |
-| Roles/memberships | — | read own | read own | ALL |
-| Media of published entity | SELECT | SELECT | SELECT | ALL |
-| Media writes | — | — | managed museums | ALL |
-| Carts/cart items | — | CRUD own | own only | ALL |
-| Ticket/shop orders, invoices | — | SELECT own | SELECT for managed museums | ALL |
-| Order/invoice writes | — | — | — | — |
+| Published museums/artifacts/products and available ticket types | Read | Read | Read | Read/Write |
+| Draft/archived catalog | — | — | Read/Write in managed museums | Read/Write |
+| Profile (`display_name`, `phone`) | — | Read/Update own | same | Read all |
+| Roles/memberships | — | Read own | Read own | Read/Write via SQL (read via API) |
+| Media of published entity | Read | Read | Read | Read/Write |
+| Media writes | — | — | Managed museums | Read/Write |
+| Carts/cart items | — | CRUD own | Own only | CRUD |
+| Ticket/shop orders, invoices | — | Read own + create/cancel own via service | Read/Manage managed museums | Read/Manage all |
+| Direct order/invoice field overrides | — | — | — | — |
 
-- Public catalog policies must also require `museums.status = 'published'`; a published artifact in a draft museum is not public.
-- Order, item, invoice, payment, total, and `entry_code` writes happen only through RPCs.
-- Invoices are immutable: no UPDATE/DELETE policy.
-- RLS cannot limit columns; restrict profile edits with `GRANT UPDATE (display_name, phone)`.
-- Policies on `museum_admins` must call `private.can_manage_museum()` to avoid recursion.
+- Public catalog queries must require `museums.status = 'published'`; a published artifact in a draft museum is not public.
+- Order, item, invoice, payment, total, and `entry_code` writes happen only inside Express transactional services.
+- Invoices are immutable: never updated or deleted by any endpoint.
+- Profile updates accept `display_name` and `phone` only.
 
-## 8. RPCs
+## 8. Transactional Operations (Express + Drizzle)
 
-All functions are `SECURITY DEFINER`, `SET search_path = ''`, validate `auth.uid()` and inputs, and are revoked from `anon`.
+All multi-row and state-transition writes run inside `db.transaction(...)` with row locks where needed, validating the authenticated user and inputs.
 
-**`purchase_tickets(p_museum_id, p_visit_date, p_time_slot, p_items jsonb) → uuid`**
+**Purchase tickets (`POST /api/v1/ticket-orders`)**
 
-1. Validate the museum is `published`, ticket types belong to it and are available; validate date is today or later and the slot matches the fixed list. "Today" means `(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date`; Supabase runs the database in UTC. No capacity check.
+1. Validate the museum is `published`, ticket types belong to it and are available; validate `visit_date` is today or later and `time_slot` matches the fixed list. "Today" uses `Asia/Ho_Chi_Minh` (`UTC+7`); the database stores timestamps in UTC. No capacity check.
 2. Read current prices, set `unit_price`, compute `total_amount` (`line_total` is generated).
-3. Insert the order and items.
+3. Insert `ticket_orders` and `ticket_order_items`.
 4. Fake payment succeeds: `payment_status = 'paid'`, `status = 'confirmed'`, generate one unguessable `entry_code`.
 5. Insert `ticket_invoices` with `invoice_number = 'TKT-' || nextval('invoice_seq')`.
 
-**`checkout_cart(p_cart_id, p_shipping jsonb) → uuid`**
+**Checkout cart (`POST /api/v1/carts/:cartId/checkout`)**
 
-1. Lock the cart and its items; require the cart to be `active` and owned by `auth.uid()`.
-2. Lock products with `SELECT ... FOR UPDATE ORDER BY id`; re-check that the museum and products are `published`, plus price and stock.
+1. Lock the cart and its items (`FOR UPDATE`); require the cart to be `active` and owned by the caller.
+2. Lock products with `SELECT ... FOR UPDATE ORDER BY id`; re-check that the museum and products are `published`, plus current price and stock.
 3. Insert `shop_orders` and `shop_order_items` with snapshots; compute `subtotal` and apply a server-side flat `shipping_fee` (`line_total` and `total_amount` are generated). Never accept the fee from the client.
-4. Decrement stock with `UPDATE ... WHERE stock_quantity >= qty`; no row updated means rollback.
+4. Decrement stock conditionally (`WHERE stock_quantity >= qty`); zero affected rows rolls back the transaction.
 5. Fake payment succeeds: `payment_status = 'paid'`, `status = 'confirmed'`; insert `shop_invoices` with `invoice_number = 'SHP-' || nextval('invoice_seq')`.
 6. Mark the cart `converted`.
 
-**`redeem_entry(p_entry_code) → uuid`** — admin only. Lock the order, verify its museum is managed, `status = 'confirmed'`, and `visit_date` equals today in `Asia/Ho_Chi_Minh`; set `status = 'used'`, `used_at = now()`. Rejects re-use.
+**Redeem entry (`POST /api/v1/admin/ticket-orders/redeem`)** — museum admin (or `super_admin`) only. Lock the order, verify its museum is managed, `status = 'confirmed'`, and `visit_date` equals today in `Asia/Ho_Chi_Minh`; set `status = 'used'`, `used_at = now()`. Rejects re-use.
 
-**`update_fulfillment(p_order_id, p_status)`** — admin only; allows `confirmed → shipped → completed`.
+**Update fulfillment (`PATCH /api/v1/admin/shop-orders/:id/fulfillment`)** — museum admin (or `super_admin`) only; allows `confirmed → shipped → completed`.
 
-**`cancel_ticket_order` / `cancel_shop_order`** — owner or admin; allowed while `confirmed` (ticket orders only before `visit_date`; shop orders only before `shipped`). Set `cancelled`; restore stock for shop orders. No refunds.
+**Cancel ticket/shop order** — owner or museum admin; allowed while `confirmed` (ticket orders only before `visit_date` in `Asia/Ho_Chi_Minh`; shop orders only before `shipped`). Set `cancelled`; restore stock for shop orders. No refunds.
 
-A shared `invoice_seq` plus the `TKT-`/`SHP-` prefixes keeps invoice numbers globally unique.
+A shared `invoice_seq` sequence plus the `TKT-`/`SHP-` prefixes keeps invoice numbers globally unique.
 
 ## 9. Storage
 
 - Two public buckets for the demo: `museum-media` and `souvenir-media`.
-- Path: `museum_id/entity_type/entity_id/random_filename`; never use the original filename as identity.
-- Admin-only writes; validate size, MIME type, and extension server-side.
+- Path: `{museum_id}/{entity_type}/{entity_id}/{random_filename}`; never use the original filename as identity.
+- Express handles admin-only uploads/deletes (via Supabase Storage / S3-compatible API); validate file size, MIME type, extension, and museum admin permission server-side before writing `media_assets`.
 - Public buckets mean anyone with a path can read the object. Use private buckets and signed URLs in production.
-- DB deletes do not remove Storage objects; cleanup is best-effort.
+- Storage object deletion on `media_assets` delete is best-effort.
 
 ## 10. Out of scope
 

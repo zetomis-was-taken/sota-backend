@@ -1,10 +1,10 @@
 # API Contract (Demo) — Museum Management System
 
-An Express.js + TypeScript server hosts operational endpoints (starting with `GET /health`), while Supabase remains the data, auth, and storage backend using the publishable key and RLS (see `docs/database-design.md` §1). This file defines the HTTP surface: Express server endpoints, PostgREST (`/rest/v1`), Auth (`/auth/v1`), and Storage (`/storage/v1`). Authorization is RLS only; the auth model is in `docs/auth-guide.md`.
+An application-centric Express.js + TypeScript server owns the HTTP data and business API (`/health`, `/api/v1/*`) using Drizzle ORM over `DATABASE_URL`. **Supabase Auth** (`/auth/v1`) handles user authentication, and **Supabase Storage** holds uploaded media objects. Authorization is enforced in Express middleware and services (see `docs/auth-guide.md` and `docs/database-design.md`).
 
-> Keep this contract updated when adding Express routes. Do not add endpoints that bypass RLS.
+> Keep this contract updated when adding or changing Express routes. Do not expose direct PostgREST (`/rest/v1`) data endpoints to clients.
 
-## 0. Express server endpoints
+## 0. Operational endpoints
 
 | Method | Path | Who | Returns |
 |---|---|---|---|
@@ -14,28 +14,28 @@ An Express.js + TypeScript server hosts operational endpoints (starting with `GE
 
 ### Base URL and headers
 
-Base: `https://<project-ref>.supabase.co`.
+Base: `<express-server-origin>/api/v1` (Auth endpoints are on Supabase: `https://<project-ref>.supabase.co/auth/v1`).
 
 | Header | Required | Value |
 |---|---|---|
-| `apikey` | Always | publishable key (`sb_publishable_...`) |
-| `Authorization` | Signed-in calls | `Bearer <access_token>` (omitted or publishable key when signed out) |
-| `Content-Type` | JSON writes | `application/json` (raw file content type for Storage uploads) |
-| `Prefer` | Writes | `return=representation` to get the written rows; `count=exact` for counts |
+| `Authorization` | Protected routes | `Bearer <supabase_access_token>` |
+| `Content-Type` | JSON writes | `application/json` (`multipart/form-data` for media uploads) |
 
-### Query parameters (PostgREST)
+### Pagination & Query parameters
 
-`select=*`, `select=id,name`, embeddings `select=*,ticket_order_items(*)`; filters `id=eq.<uuid>`, `status=eq.published`, `is_available=eq.true`, `created_at=gte.2026-01-01`; `order=created_at.desc`; `limit` + `offset`. Always paginate list calls explicitly. For a single row, send `Accept: application/vnd.pgrst.object+json` and expect `406` when there is no visible row.
+- List endpoints accept `limit` (default `24`, max `100`) and `offset` (default `0`).
+- Responses wrap collections consistently as `{ data, pagination: { limit, offset, total } }` and single resources as `{ data }`.
 
-### Data formats
+### Data formats & Errors
 
-- IDs are UUIDs; timestamps are ISO 8601 UTC; dates are `YYYY-MM-DD`; money is a decimal number in VND.
-- RPC parameters are sent as a JSON object whose keys are the function's `p_` argument names.
-- Missing or invalid session → `401`; insufficient table/column privilege → `403`. RLS-filtered reads return `200` with `[]` (or `406` for a single-object request); a denied insert returns `403`; an UPDATE/DELETE matching no visible rows returns `204` with no body. Treat all of these as "not allowed or not found", never as success.
-- Unique/FK violations → `409`; check violations and RPC failures → `400`. Errors follow PostgREST shape: `{"code","message","details","hint"}`.
-- Clients never send `created_at`, `updated_at`, generated columns (`line_total`, `total_amount`), or totals.
+- IDs are UUIDs; timestamps are ISO 8601 UTC; dates are `YYYY-MM-DD`; money is a decimal string/number in VND (`numeric(12, 2)`).
+- Missing or invalid token → `401`; insufficient role or museum membership → `403`; missing or invisible resource → `404`; unique/FK conflict → `409`; validation or business rule failure → `400`.
+- Error shape: `{"error": {"code": "<error_token>", "message": "<human_readable_message>", "details"?: ...}}`. Clients branch on `error.code`, not on `error.message`.
+- Clients never send `user_id`, `created_at`, `updated_at`, `created_by`, generated columns (`line_total`, `total_amount`), `payment_status`, `entry_code`, or `shipping_fee`.
 
-## 2. Auth endpoints
+## 2. Auth endpoints (Supabase Auth)
+
+Clients use `@supabase/supabase-js` (with the publishable key) against Supabase GoTrue (`/auth/v1`):
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
@@ -48,203 +48,122 @@ Base: `https://<project-ref>.supabase.co`.
 | POST | `/auth/v1/recover` | `{email}` | `200` |
 | GET | `/auth/v1/verify?token=...&type=signup\|recovery` | — | Email-link redirect |
 
-- The signup trigger creates `public.users` and `user_roles(normal_user)`. Clients never insert either row.
-- Roles are not JWT claims; a role change applies to the next request with the same token.
-- `signup` returns no session when email confirmation is on; the client waits for verification before signing in.
-- Password reset: `recover` sends a link that lands on the app with a recovery session; then call `PUT /auth/v1/user` with the new password.
-- Endpoint shapes are GoTrue's; clients should use `supabase-js` rather than hand-rolling them.
+- An `auth.users` signup trigger (or Express lazy provisioning) creates `public.users` and `user_roles(normal_user)`.
+- Roles are not read from JWT claims; Express checks Postgres on each request so role changes apply immediately.
 
 ## 3. Profile, roles, memberships
 
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| GET | `/rest/v1/users?id=eq.{uid}&select=id,display_name,phone` | user | Own profile |
-| PATCH | `/rest/v1/users?id=eq.{uid}` | user | Body: `{display_name, phone}` only |
-| GET | `/rest/v1/users?select=*` | super_admin | All profiles |
-| GET | `/rest/v1/user_roles?user_id=eq.{uid}&select=role` | user | Own roles |
-| GET | `/rest/v1/museum_admins?user_id=eq.{uid}&status=eq.active&select=museum_id,status` | user | Museum scope for admin UI |
-| GET | `/rest/v1/user_roles?select=*` | super_admin | All roles |
-| GET | `/rest/v1/museum_admins?select=*` | super_admin | All memberships |
+| GET | `/api/v1/me` | authenticated | Returns own profile (`id`, `display_name`, `phone`), `roles`, and active `managed_museums` (`museum_id`, `status`) |
+| PATCH | `/api/v1/me` | authenticated | Body: `{display_name?, phone?}` only |
+| GET | `/api/v1/admin/users` | `super_admin` | List all user profiles with roles and museum memberships |
 
-No insert/update/delete endpoints exist for `user_roles` or `museum_admins`; provisioning is SQL (see `docs/auth-guide.md` §3). `users` has no insert/delete endpoint. Patching any profile column other than `display_name`/`phone` is rejected by column grants.
+No API endpoints exist to create/update/delete `user_roles` or `museum_admins`; provisioning is SQL (see `docs/auth-guide.md` §3). `users` has no delete endpoint.
 
 ## 4. Catalog — public reads
 
-No session required. Only `published` museums and their published/available children are visible.
+No token required. Only `published` museums and their `published` / available children are returned.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/rest/v1/museums?status=eq.published&order=created_at.desc&limit=24&offset=0` | List |
-| GET | `/rest/v1/museums?slug=eq.{slug}&select=*,artifacts(*),souvenir_products(*),ticket_types(*)` | Detail with embedded children |
-| GET | `/rest/v1/artifacts?museum_id=eq.{museum_id}&status=eq.published` | Museum artifacts |
-| GET | `/rest/v1/artifacts?id=eq.{id}` | Detail |
-| GET | `/rest/v1/souvenir_products?museum_id=eq.{museum_id}&status=eq.published` | Museum shop |
-| GET | `/rest/v1/souvenir_products?id=eq.{id}` | Detail |
-| GET | `/rest/v1/ticket_types?museum_id=eq.{museum_id}&is_available=eq.true` | Sellable ticket types |
-| GET | `/rest/v1/media_assets?entity_type=eq.{artifact\|souvenir}&entity_id=eq.{id}&order=sort_order.asc` | Gallery |
+| GET | `/api/v1/museums` | List published museums (`limit`, `offset`, ordered by `created_at` desc) |
+| GET | `/api/v1/museums/:slug` | Published museum detail with embedded published `artifacts`, `souvenir_products`, and available `ticket_types` |
+| GET | `/api/v1/museums/:museumId/artifacts` | Published artifacts of a published museum |
+| GET | `/api/v1/artifacts/:id` | Published artifact detail (requires parent museum `published`) |
+| GET | `/api/v1/museums/:museumId/products` | Published souvenir products of a published museum |
+| GET | `/api/v1/products/:id` | Published souvenir product detail (requires parent museum `published`) |
+| GET | `/api/v1/museums/:museumId/ticket-types` | Available ticket types of a published museum |
+| GET | `/api/v1/media` | Query: `entity_type=artifact\|souvenir&entity_id=:id`; ordered by `sort_order` asc (requires parent museum & entity `published`) |
 
-A published artifact inside a draft museum is not visible. Media rows are visible only when their parent museum and entity are public. There is no public user, order, or admin endpoint.
+A published artifact or product inside a `draft` or `archived` museum returns `404` publicly.
 
-## 5. Catalog — admin reads and writes
+## 5. Catalog & media — admin reads and writes
 
-`admin_user` needs an `active` `museum_admins` row for that museum; `super_admin` is unrestricted.
+`admin_user` requires an `active` `museum_admins` row for the target museum; `super_admin` is unrestricted.
 
-Admin reads include draft/archived rows in managed museums (the public filters in §4 exclude them):
-
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/rest/v1/museums?select=*` | Published museums plus draft/archived ones they manage |
-| GET | `/rest/v1/artifacts?museum_id=eq.{id}&select=*` | All statuses |
-| GET | `/rest/v1/souvenir_products?museum_id=eq.{id}&select=*` | All statuses, including stock |
-| GET | `/rest/v1/ticket_types?museum_id=eq.{id}&select=*` | Including unavailable types |
-
-Writes:
+Admin reads include `draft` and `archived` rows for managed museums:
 
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| POST | `/rest/v1/museums` | super_admin | `{name, slug, description?, address?, city?, cover_image_path?, status?, created_by}` |
-| PATCH | `/rest/v1/museums?id=eq.{id}` | super_admin; admin_user for managed museum | Mutable catalog fields, including `status` |
-| POST | `/rest/v1/artifacts` | admin | `{museum_id, name, description?, period?, inventory_code?, status?, created_by}` |
-| PATCH | `/rest/v1/artifacts?id=eq.{id}` | admin | Same fields; `status` used to publish/archive |
-| POST | `/rest/v1/souvenir_products` | admin | `{museum_id, name, description?, sku?, price, stock_quantity?, status?, created_by}` |
-| PATCH | `/rest/v1/souvenir_products?id=eq.{id}` | admin | Including `price`, `stock_quantity`, `status` (restock) |
-| POST | `/rest/v1/ticket_types` | admin | `{museum_id, name, description?, price, is_available?}` |
-| PATCH | `/rest/v1/ticket_types?id=eq.{id}` | admin | Including `price`, `is_available` |
-| POST | `/rest/v1/media_assets` | admin | Metadata after upload; `{museum_id, entity_type, entity_id, media_type, storage_bucket, storage_path, mime_type, sort_order?, is_primary?, created_by}` |
-| PATCH | `/rest/v1/media_assets?id=eq.{id}` | admin | `{sort_order, is_primary}` |
-| DELETE | `/rest/v1/media_assets?id=eq.{id}` | admin | Storage object cleanup is best-effort |
+| GET | `/api/v1/admin/museums` | admin | Managed museums (all statuses); `super_admin` sees all |
+| POST | `/api/v1/admin/museums` | `super_admin` | `{name, slug, description?, address?, city?, cover_image_path?, status?}` |
+| PATCH | `/api/v1/admin/museums/:id` | `super_admin` / museum admin | Mutable museum fields, including `status` |
+| GET | `/api/v1/admin/museums/:museumId/artifacts` | admin | All statuses |
+| POST | `/api/v1/admin/museums/:museumId/artifacts` | admin | `{name, description?, period?, inventory_code?, status?}` |
+| PATCH | `/api/v1/admin/artifacts/:id` | admin | Same fields; `status` used to publish/archive |
+| GET | `/api/v1/admin/museums/:museumId/products` | admin | All statuses, including `stock_quantity` |
+| POST | `/api/v1/admin/museums/:museumId/products` | admin | `{name, description?, sku?, price, stock_quantity?, status?}` |
+| PATCH | `/api/v1/admin/products/:id` | admin | Including `price`, `stock_quantity`, `status` (restock) |
+| GET | `/api/v1/admin/museums/:museumId/ticket-types` | admin | Including unavailable types |
+| POST | `/api/v1/admin/museums/:museumId/ticket-types` | admin | `{name, description?, price, is_available?}` |
+| PATCH | `/api/v1/admin/ticket-types/:id` | admin | Including `price`, `is_available` |
+| POST | `/api/v1/admin/media` | admin | `multipart/form-data`: `file` + `{museum_id, entity_type, entity_id, media_type, sort_order?, is_primary?}` |
+| PATCH | `/api/v1/admin/media/:id` | admin | `{sort_order?, is_primary?}` |
+| DELETE | `/api/v1/admin/media/:id` | admin | Deletes `media_assets` row + best-effort Storage object deletion |
 
-- Catalog rows (`museums`, `artifacts`, `souvenir_products`, `ticket_types`) are archived via `PATCH {status: "archived"}`, never deleted. No DELETE endpoints exist for them.
-- `museum_id` cannot be changed after creation. `created_by` must be the caller's id.
+- Catalog rows (`museums`, `artifacts`, `souvenir_products`, `ticket_types`) are archived via `PATCH` (`status: "archived"` or `is_available: false`), never hard-deleted. No DELETE endpoints exist for them.
+- `museum_id` cannot be changed after creation. `created_by` is set server-side from the authenticated user.
 - Price/stock edits do not affect existing orders or their snapshots.
 
 ## 6. Carts
 
+All cart routes require authentication and operate only on the caller's own carts.
+
+| Method | Path | Body / Query | Notes |
+|---|---|---|---|
+| GET | `/api/v1/carts` | — | Own `active` carts (one per museum) with `items` and product summary |
+| POST | `/api/v1/carts` | `{museum_id}` | Creates active cart; duplicate active cart for same museum → `409` |
+| PATCH | `/api/v1/carts/:id` | `{status: "abandoned"}` | Only `"abandoned"` is client-settable; `"converted"` is set by checkout |
+| DELETE | `/api/v1/carts/:id` | — | Own non-`converted` cart (`converted` carts kept for order history) |
+| POST | `/api/v1/carts/:cartId/items` | `{product_id, quantity}` | Duplicate product in same cart → `409`; product must belong to cart's museum (`400`) |
+| PATCH | `/api/v1/carts/:cartId/items/:itemId` | `{quantity}` | Updates quantity (`> 0`) |
+| DELETE | `/api/v1/carts/:cartId/items/:itemId` | — | Removes item |
+
+Stock and price are re-checked at checkout, not when adding to the cart.
+
+## 7. Ticket orders & invoices
+
+No direct POST/PATCH/DELETE on invoices or order totals.
+
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| GET | `/rest/v1/carts?status=eq.active&select=*,cart_items(*)` | user | Own active carts (one per museum) |
-| POST | `/rest/v1/carts` | user | `{museum_id, user_id}`; duplicate active cart → `409` |
-| PATCH | `/rest/v1/carts?id=eq.{id}` | user | `{status: "abandoned"}` only; `converted` is set by checkout |
-| DELETE | `/rest/v1/carts?id=eq.{id}` | user | Own cart; do not delete `converted` carts (order history) |
-| GET | `/rest/v1/cart_items?cart_id=eq.{cart_id}&select=*,souvenir_products(*)` | user | Cart contents |
-| POST | `/rest/v1/cart_items` | user | `{cart_id, product_id, quantity}`; duplicate product → `409` |
-| PATCH | `/rest/v1/cart_items?id=eq.{id}` | user | `{quantity}` |
-| DELETE | `/rest/v1/cart_items?id=eq.{id}` | user | Remove line |
+| POST | `/api/v1/ticket-orders` | authenticated | Body: `{museum_id, visit_date, time_slot, items: [{ticket_type_id, quantity}]}`. Creates order + items from current prices, runs fake payment (`confirmed`/`paid`), generates `entry_code`, creates `TKT-` invoice. Returns order with items and invoice. |
+| GET | `/api/v1/ticket-orders` | authenticated | Own ticket orders (`limit`, `offset`) |
+| GET | `/api/v1/ticket-orders/:id` | owner / museum admin | Order detail with items and invoice |
+| POST | `/api/v1/ticket-orders/:id/cancel` | owner / museum admin | Allowed while `confirmed` and before `visit_date` (`Asia/Ho_Chi_Minh`). Sets `cancelled`; no refund. |
+| GET | `/api/v1/admin/museums/:museumId/ticket-orders` | admin | Gate list for managed museum (filterable by `visit_date`, `status`) |
+| POST | `/api/v1/admin/ticket-orders/redeem` | admin | Body: `{entry_code}`. Requires active membership in order's museum, `status = confirmed`, and `visit_date` = today in `Asia/Ho_Chi_Minh`. Sets `used` / `used_at`. |
 
-- The product must belong to the cart's museum (DB trigger); a mismatch fails the write.
-- Stock and price are re-checked at checkout, not when adding to the cart.
-- Users can only reach their own carts; filtering by `user_id` is still recommended.
+`POST /api/v1/ticket-orders` error codes: `museum_not_available`, `ticket_type_unavailable`, `invalid_time_slot`, `invalid_visit_date`, `invalid_items`.
 
-## 7. Orders and invoices — read-only
+`POST /api/v1/admin/ticket-orders/redeem` error codes: `entry_code_not_found`, `not_museum_admin`, `order_not_confirmed`, `wrong_visit_date`, `already_used`.
 
-No POST/PATCH/DELETE exists. All writes go through the RPCs in §8.
+`POST /api/v1/ticket-orders/:id/cancel` error codes: `order_not_found`, `not_owner_or_admin`, `order_not_cancellable`, `visit_date_passed`.
+
+## 8. Shop orders & invoices
 
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| GET | `/rest/v1/ticket_orders?user_id=eq.{uid}&order=created_at.desc&select=*,ticket_order_items(*),ticket_invoices(*)` | user | Own ticket orders |
-| GET | `/rest/v1/ticket_orders?id=eq.{id}&select=*,ticket_order_items(*),ticket_invoices(*)` | user / admin | Detail |
-| GET | `/rest/v1/ticket_orders?museum_id=eq.{museum_id}&status=eq.confirmed&visit_date=eq.{today}` | admin | Gate list for a managed museum |
-| GET | `/rest/v1/shop_orders?user_id=eq.{uid}&order=created_at.desc&select=*,shop_order_items(*),shop_invoices(*)` | user | Own shop orders |
-| GET | `/rest/v1/shop_orders?id=eq.{id}&select=*,shop_order_items(*),shop_invoices(*)` | user / admin | Detail |
-| GET | `/rest/v1/shop_orders?museum_id=eq.{museum_id}&status=eq.confirmed` | admin | Fulfillment queue |
-| GET | `/rest/v1/ticket_order_items?ticket_order_id=eq.{id}` | user / admin | Order lines |
-| GET | `/rest/v1/shop_order_items?order_id=eq.{id}` | user / admin | Order lines |
-| GET | `/rest/v1/ticket_invoices?ticket_order_id=eq.{id}` | user / admin | Invoice |
-| GET | `/rest/v1/shop_invoices?order_id=eq.{id}` | user / admin | Invoice |
+| POST | `/api/v1/carts/:cartId/checkout` | authenticated | Body: `{shipping_name, shipping_phone, shipping_address, shipping_city?}`. Locks cart & products, re-checks published status/price/stock, applies server-side flat `shipping_fee`, decrements stock, runs fake payment (`confirmed`/`paid`), creates `SHP-` invoice, marks cart `converted`. |
+| GET | `/api/v1/shop-orders` | authenticated | Own shop orders (`limit`, `offset`) |
+| GET | `/api/v1/shop-orders/:id` | owner / museum admin | Order detail with items and invoice |
+| POST | `/api/v1/shop-orders/:id/cancel` | owner / museum admin | Allowed while `confirmed` and before `shipped`. Sets `cancelled` and restores `stock_quantity`; no refund. |
+| GET | `/api/v1/admin/museums/:museumId/shop-orders` | admin | Fulfillment queue for managed museum (filterable by `status`) |
+| PATCH | `/api/v1/admin/shop-orders/:id/fulfillment` | admin | Body: `{status: "shipped" \| "completed"}`. Allows `confirmed → shipped → completed`. |
 
-Invoices are immutable. Admins see orders for managed museums only; `super_admin` sees all.
+`POST /api/v1/carts/:cartId/checkout` error codes: `cart_not_found`, `cart_not_active`, `product_unavailable`, `price_changed`, `out_of_stock`.
 
-## 8. RPCs
+`PATCH /api/v1/admin/shop-orders/:id/fulfillment` error codes: `order_not_found`, `not_museum_admin`, `invalid_transition`.
 
-All are `POST /rest/v1/rpc/{name}`. Parameters are `p_`-prefixed JSON keys. Callers must be signed in; RPCs validate `auth.uid()` themselves. Failures return `400` with `message` set to one of the tokens below — clients branch on `message`, not on human-readable text. Unauthenticated calls are rejected by the function grants (`401`/`403`).
-
-### `purchase_tickets` → ticket order UUID
-
-```json
-{
-  "p_museum_id": "uuid",
-  "p_visit_date": "2026-11-20",
-  "p_time_slot": "09:00-11:00",
-  "p_items": [{"ticket_type_id": "uuid", "quantity": 2}]
-}
-```
-
-Creates the order and items from current prices, performs the fake payment (`confirmed`/`paid`), issues one `entry_code`, and creates the `TKT-` invoice. Slot must be one of the four fixed values; date must be today or later in `Asia/Ho_Chi_Minh`.
-
-Rejects: `museum_not_available`, `ticket_type_unavailable`, `invalid_time_slot`, `invalid_visit_date`, `invalid_items`.
-
-### `checkout_cart` → shop order UUID
-
-```json
-{
-  "p_cart_id": "uuid",
-  "p_shipping": {
-    "shipping_name": "Nguyen Van A",
-    "shipping_phone": "0900000000",
-    "shipping_address": "1 Le Loi",
-    "shipping_city": "Ho Chi Minh City"
-  }
-}
-```
-
-Locks the cart and products, re-checks price/stock, applies the server-side flat shipping fee, decrements stock, performs the fake payment, creates the `SHP-` invoice, and marks the cart `converted`. The client never sends the fee or totals.
-
-Rejects: `cart_not_found`, `cart_not_active`, `product_unavailable`, `price_changed`, `out_of_stock`.
-
-### `redeem_entry` → ticket order UUID
-
-```json
-{"p_entry_code": "..."}
-```
-
-Admin only. Requires an `active` membership in the order's museum, `status = confirmed`, and `visit_date` equal to today in `Asia/Ho_Chi_Minh`. Sets `used`/`used_at`.
-
-Rejects: `entry_code_not_found`, `not_museum_admin`, `order_not_confirmed`, `wrong_visit_date`, `already_used`.
-
-### `update_fulfillment`
-
-```json
-{"p_order_id": "uuid", "p_status": "shipped"}
-```
-
-Admin only. Allows `confirmed → shipped → completed` on a shop order.
-
-Rejects: `order_not_found`, `not_museum_admin`, `invalid_transition`.
-
-### `cancel_ticket_order`
-
-```json
-{"p_order_id": "uuid"}
-```
-
-Owner or admin. Only while `confirmed` and before `visit_date`. Sets `cancelled`; no refund.
-
-Rejects: `order_not_found`, `not_owner_or_admin`, `order_not_cancellable`, `visit_date_passed`.
-
-### `cancel_shop_order`
-
-```json
-{"p_order_id": "uuid"}
-```
-
-Owner or admin. Only while `confirmed` and before `shipped`. Sets `cancelled`; restores stock; no refund.
-
-Rejects: `order_not_found`, `not_owner_or_admin`, `order_not_cancellable`, `already_shipped`.
+`POST /api/v1/shop-orders/:id/cancel` error codes: `order_not_found`, `not_owner_or_admin`, `order_not_cancellable`, `already_shipped`.
 
 ## 9. Storage
 
-Buckets `museum-media` and `souvenir-media` are public. Paths: `{museum_id}/{entity_type}/{entity_id}/{random_filename}`.
+Buckets `museum-media` and `souvenir-media` are public. Object keys follow `{museum_id}/{entity_type}/{entity_id}/{random_filename}`.
 
-| Method | Path | Who | Notes |
-|---|---|---|---|
-| POST | `/storage/v1/object/{bucket}/{path}` | admin | Raw file body; `Content-Type`; `x-upsert: false`; size and MIME limited by bucket settings and policies |
-| GET | `/storage/v1/object/public/{bucket}/{path}` | public | No auth header required |
-| DELETE | `/storage/v1/object/{bucket}/{path}` | admin | Managed museum only |
-
-- Storage policies enforce the same museum scope using the first path segment (`museum_id`).
-- Upload first, then insert the `media_assets` row; delete the row and object together (object cleanup best-effort).
-- Accepted media: images (`image/jpeg`, `image/png`, `image/webp`) and videos (`video/mp4`, `video/webm`).
-- Public URLs can be read by anyone with the path; signed URLs are not used in this demo.
+- Admin uploads go through `POST /api/v1/admin/media`, where Express validates museum admin scope, file size, MIME type (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`), and extension before uploading to Supabase Storage (or S3-compatible endpoint) and inserting the `media_assets` row.
+- Public reads use the bucket public URL (`GET /storage/v1/object/public/{bucket}/{path}`); signed URLs are not used in this demo.
 
 ## 10. Not provided
 

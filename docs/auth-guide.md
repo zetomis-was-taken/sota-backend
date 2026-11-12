@@ -1,64 +1,60 @@
 # Auth Guide (Demo) — Museum Management System
 
-How to use Supabase Auth correctly. This covers identity, roles, and access checks only; endpoint details belong in `api-contract.md`. Schema details are in `docs/database-design.md` §7.
+How authentication and authorization work in the application-centric Express backend with Supabase Auth. Endpoint shapes belong in `docs/api-contract.md`; schema details belong in `docs/database-design.md`.
 
 ## 1. Principles
 
-1. **Authentication = Supabase Auth. Authorization = RLS.** There is no other security layer. If a query is allowed, it runs; if not, RLS returns no rows or an error.
-2. **The client uses the publishable key plus the user's session.** The secret / `service_role` key bypasses RLS and must never reach the browser or a public bundle.
-3. **Roles are stored in the database, not in the JWT.** A role change applies to the next query, not the next login.
-4. **Never gate data in app code.** UI checks are convenience only; the database decides. Assume any client request can be replayed by hand.
-5. **Idempotent signup.** The signup trigger creates `public.users` and `user_roles(normal_user)`; the client must not create or upsert either row.
+1. **Authentication = Supabase Auth. Authorization = Express middleware + Postgres role/membership lookup.** Supabase Auth handles sign-up, login, password recovery, and JWT issuance; Express enforces all permissions on every API route.
+2. **Clients talk to Supabase Auth for sessions, and to Express (`/api/v1/*`) for application data.** Clients send `Authorization: Bearer <access_token>` to Express and never call PostgREST (`/rest/v1`) directly.
+3. **Roles are stored in Postgres (`user_roles`, `museum_admins`), not in the JWT.** Express queries them per request so role/membership changes or revocations apply immediately.
+4. **Never trust client-supplied identity or privileged fields.** `user_id` always comes from the verified Supabase Auth user, never from request body/query.
+5. **Idempotent user provisioning.** An `auth.users` signup trigger (or Express upsert-on-first-request fallback) creates `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING`.
 
 ## 2. Roles
 
 | Role | Granted by | Scope |
 |---|---|---|
-| `normal_user` | Signup trigger | Own profile, carts, orders, invoices |
+| `normal_user` | Signup trigger / Express fallback | Own profile, carts, orders, invoices |
 | `admin_user` | `super_admin` (SQL) | Managed museums, and only while `museum_admins.status = 'active'` |
 | `super_admin` | SQL only (first row inserted manually) | Everything |
 
-- `admin_user` alone grants nothing. Management requires **both** the role and an `active` `museum_admins` row (`private.can_manage_museum(museum_id)`).
-- `super_admin` is not self-service. Never expose a way to grant it from the app.
-- Revoking a membership takes effect immediately; the app should refetch roles on focus/reload rather than cache them for the session.
+- `admin_user` alone grants nothing. Management requires **both** the `admin_user` role and an `active` `museum_admins` row (`canManageMuseum(userId, museumId)`).
+- `super_admin` is not self-service. Never expose an endpoint to grant it from the app.
+- Revoking a membership takes effect on the very next Express request.
 - Membership rows are reused on re-assignment; no history is kept.
 
-## 3. Backend (database side)
+## 3. Backend (Express + Postgres)
 
-- **Do not write to `auth.users`.** Supabase owns it. Application data lives in `public.users` (profile) and role tables.
-- **Profiles:** only `display_name` and `phone` are client-updatable (column-level `GRANT UPDATE`). Do not add profile columns to the client's update payload; `id` and timestamps are server-owned.
-- **RPCs are the only write path** for orders, items, invoices, payments, totals, and `entry_code`s. Each RPC is `SECURITY DEFINER`, `SET search_path = ''`, validates `auth.uid()` and inputs, and is revoked from `anon`.
-- **RLS helpers** (`private.is_super_admin()`, `private.can_manage_museum()`) are the single source of authorization logic. Reuse them in new policies; do not duplicate role checks in SQL or TypeScript.
-- **Policies must not recurse.** Queries against `museum_admins` from a policy go through `private.can_manage_museum()`.
-- **Invoices are immutable** — no UPDATE/DELETE policy. Do not add one.
-- **If a server layer is added** (e.g. Next.js route handlers), forward the caller's JWT and let RLS decide. Do not use `service_role` to "fix" a permission error, and do not implement a second authorization model there.
+- **Verify tokens via Supabase Auth:** `requireAuth` extracts `Authorization: Bearer <token>` and validates it with `supabase.auth.getUser(token)`. Missing, expired, or invalid tokens return `401`.
+- **Single authorization helper module:** Centralize `isSuperAdmin(userId)` and `canManageMuseum(userId, museumId)` in one auth/permission module used by all middleware and services. Do not scatter ad-hoc role queries across route handlers.
+- **Do not write to `auth.users` from Express.** Supabase Auth owns `auth.users`. Application profile data lives in `public.users`.
+- **Profiles:** only `display_name` and `phone` are updatable via `PATCH /api/v1/me`. Ignore or reject any other fields (`id`, timestamps, roles).
+- **Orders, items, invoices, payments, totals, and `entry_code`s** are written only by Express transactional services (`db.transaction(...)`). Never accept totals, `shipping_fee`, `payment_status`, or `entry_code` from clients.
+- **Invoices are immutable** — expose read-only endpoints only; never add update/delete routes.
+- **Secrets stay on the server:** `DATABASE_URL` and any `SUPABASE_S3_*` / `SUPABASE_SECRET_KEY` credentials exist only in server `.env`, never in frontend config.
 - **Admin provisioning** is SQL/seed work: grant `admin_user`, then insert/re-activate the `museum_admins` row. There is no app flow for it in this demo.
 
 ## 4. Frontend
 
-- Create one Supabase client with the publishable key. Enable session persistence and auto-refresh; for SSR frameworks use `@supabase/ssr` with cookies instead of `localStorage`.
-- **Identity:** call `getUser()` when a decision depends on who the user is (it verifies the token). Use `getSession()` only for cheap UI state.
-- **Session lifecycle:** `signUp` → (email confirmation, if enabled) → `signInWithPassword` → `signOut`. React to `onAuthStateChange` to update the UI; do not poll.
-- **Route guards are UX only.** Redirecting unauthenticated users is fine; hiding admin pages is fine. Neither is security — keep RLS as the enforcement.
-- **Role-aware UI:** fetch the current user's `user_roles` and active `museum_admins` rows, then show admin affordances. On a denied call, show "not allowed" rather than falling back to cached data.
-- **Errors:** expired/invalid session → sign out and redirect to login. RLS denial (empty result or permission error) → treat as unauthorized; never retry with a privileged key.
-- **Admin UI is scoped to a museum.** Pick the museum first, then filter everything by `museum_id`; do not build a cross-museum admin view for a `normal_user`/`admin_user`.
-- **Fake payment is server-side.** The client never sets `payment_status`, totals, or `entry_code`; it only calls the RPC and displays the result.
-- **No secrets:** only the publishable key and the Supabase URL are public configuration.
+- Create one Supabase client with the publishable key solely for **Auth** (`signUp`, `signInWithPassword`, `signOut`, `resetPasswordForEmail`, `onAuthStateChange`).
+- **Calling Express:** attach `Authorization: Bearer <session.access_token>` to authenticated requests against Express (`/api/v1/*`). On `401`, refresh session or sign out and redirect to login.
+- **Role-aware UI:** call `GET /api/v1/me` to fetch `roles` and active `managed_museums` on login/focus/reload. Route guards are UX only; Express enforces actual permissions and returns `403` when denied.
+- **Admin UI is scoped to a museum.** Pick the museum first, then call museum-scoped `/api/v1/admin/...` endpoints.
+- **Fake payment is server-side.** The client calls the checkout/purchase endpoint and renders the returned order + invoice.
 
 ## 5. Typical flows
 
-1. **Sign up / sign in** — Supabase Auth creates the session; the trigger has already created the profile and `normal_user` role.
-2. **Browse catalog as `anon`** — no session required; only `published` data and media are visible.
-3. **Buy tickets / checkout** — signed-in user calls the RPC; the order, invoice, and fake payment are written server-side.
-4. **Manage a museum** — `super_admin` grants `admin_user` and an `active` membership by SQL; the admin signs in and sees only that museum's draft data and admin actions.
-5. **Redeem an entry code** — admin-only RPC, scoped by `can_manage_museum()`.
-6. **Sign out** — clear the session; do not keep role or profile data in global state.
+1. **Sign up / sign in** — Frontend authenticates with Supabase Auth; gets `access_token`.
+2. **Browse catalog as anonymous visitor** — Frontend calls public `GET /api/v1/museums`, etc. without a token; Express returns only `published` museums and their published/available children.
+3. **Buy tickets / checkout** — Frontend calls `POST /api/v1/ticket-orders` or `POST /api/v1/carts/:cartId/checkout` with Bearer token; Express validates, computes totals, runs fake payment, and writes order + invoice in a transaction.
+4. **Manage a museum** — `super_admin` grants `admin_user` and an `active` membership in SQL; the admin signs in via Supabase Auth and calls `/api/v1/admin/...` routes.
+5. **Redeem an entry code** — Museum admin calls `POST /api/v1/admin/ticket-orders/redeem`; Express verifies `canManageMuseum()`.
+6. **Sign out** — Frontend calls `supabase.auth.signOut()` and clears local user/role state.
 
 ## 6. Checklist
 
-- [ ] No `service_role` key in the frontend or in any public config.
-- [ ] No client writes to `user_roles`, `museum_admins`, orders, items, invoices, or `entry_code`.
-- [ ] No authorization logic duplicated outside RLS helpers and RPCs.
-- [ ] Test as `anon`, `normal_user`, `admin_user`, and `super_admin`; confirm the middle two lose access when membership is revoked.
-- [ ] Verify a published artifact inside a draft museum is not visible to `anon`.
+- [ ] No `DATABASE_URL`, `service_role`, or S3 secrets in the frontend or any public config.
+- [ ] Every protected Express route verifies the Supabase JWT and enforces ownership or `canManageMuseum()` / `isSuperAdmin()`.
+- [ ] Public catalog routes enforce `museums.status = 'published'` so a published artifact inside a draft museum is never exposed.
+- [ ] No endpoint allows clients to set `user_id`, `roles`, `total_amount`, `shipping_fee`, `payment_status`, or `entry_code`, or modify/delete invoices.
+- [ ] Test as anonymous, `normal_user`, `admin_user`, and `super_admin`; confirm `admin_user` loses access immediately when `museum_admins.status` is revoked.

@@ -9,9 +9,10 @@ Museum management demo on Supabase/Postgres with an Express.js + TypeScript back
 
 ## Architecture & Docs
 
-- **Database:** Read `docs/database-design.md` before any DB work (schema, migrations, SQL, RLS, RPCs, queries, types, seeds).
-- **API:** Read `docs/api-contract.md` before any endpoint, query, RPC, or client data call work.
-- **Constraints:** One museum per cart/order, one entry code per ticket purchase, fixed time slots (no capacity limits), fake payments, VND only. Keep the API Supabase-native (`/rest/v1`, `/auth/v1`, `/storage/v1`); do not add custom endpoints or a second auth layer without updating both `docs/api-contract.md` and `docs/database-design.md`.
+- **Database:** Read `docs/database-design.md` before any DB work (schema, migrations, SQL, triggers, queries, transactions, types, seeds).
+- **API:** Read `docs/api-contract.md` before any Express endpoint, middleware, validation, or client data call work.
+- **Auth:** Read `docs/auth-guide.md` before any authentication, role/membership check, or authorization middleware work.
+- **Constraints:** One museum per cart/order, one entry code per ticket purchase, fixed time slots (no capacity limits), fake payments, VND only. Keep the architecture application-centric: Express.js + TypeScript owns the REST API (`/api/v1`) and business logic via Drizzle ORM (`DATABASE_URL`), **Supabase Auth** handles authentication, and **Supabase Storage** stores media. Do not expose direct client PostgREST (`/rest/v1`) data writes or add a second auth provider without updating `docs/api-contract.md`, `docs/auth-guide.md`, and `docs/database-design.md`.
 - **Keep docs in sync:** `docs/` is the source of truth. Update affected docs concisely (in English) in the same change and state why; flag code bugs instead of documenting them as intended behavior.
 
 ## Commands
