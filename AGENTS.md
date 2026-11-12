@@ -2,7 +2,7 @@
 
 ## Project
 
-Museum management demo on Supabase/Postgres. The repository currently contains design documentation; application code has not been added yet.
+Museum management demo on Supabase/Postgres with an Express.js + TypeScript backend.
 
 ## Database work
 
@@ -28,4 +28,7 @@ Museum management demo on Supabase/Postgres. The repository currently contains d
 
 ## Verification
 
-- No build or test tooling is configured in this repository yet. If tooling is added, record the exact commands in this file.
+- Typecheck: `npm run typecheck` (`tsc --noEmit`)
+- Build: `npm run build` (`tsc`)
+- Dev server: `npm run dev` (`tsx watch src/index.ts`)
+- Start compiled server: `npm start` (`node dist/index.js`)
