@@ -10,8 +10,15 @@ Museum management demo on Supabase/Postgres. The repository currently contains d
 - Treat `docs/database-design.md` as the source of truth for tables, enums, constraints, indexes, authorization, and transaction behavior.
 - Follow the demo constraints defined there: one museum per cart/order, one entry code per ticket purchase, fixed time slots with no capacity limits, fake payments, and VND only.
 - If an implementation needs to differ from the design, update `docs/database-design.md` in the same change and state why.
-- Do not use `docs/database-design.md` as the current design. It is the older, longer draft and is superseded by `docs/database-design.md`.
 - Features listed as out of scope in `docs/database-design.md` §10 (real payments, refunds, audit log, account deletion, capacity limits, etc.) must not be added unless explicitly requested.
+
+## API work
+
+- **Read `docs/api-contract.md` before any task that involves an endpoint, query, RPC, or client data call.** This includes routes, request/response shapes, headers, auth requirements, error handling, and generated client types.
+- Treat `docs/api-contract.md` as the source of truth for the HTTP surface: method, path, parameters, payloads, responses, status/error semantics, and required role.
+- If code changes alter the API, update `docs/api-contract.md` in the same change and state why. Do not let the contract drift; agents may freely edit it.
+- The API is Supabase-native (`/rest/v1`, `/auth/v1`, `/storage/v1`). Do not add custom endpoints or a second authorization layer without updating this contract and `docs/database-design.md`.
+- Features out of scope in `docs/database-design.md` §10 get no endpoints.
 
 ## Documentation
 
