@@ -8,7 +8,7 @@ End-to-end checklist to implement, test, and deploy the Supabase/Postgres backen
 
 ## Phase 1 — Supabase Project & Tooling Setup
 
-- [ ] Initialize Supabase project in the repo (`supabase init`) to create `supabase/config.toml`.
+- [x] Initialize Supabase project in the repo (`supabase init`) to create `supabase/config.toml`.
 - [ ] Configure `supabase/config.toml`:
   - [ ] Enable email/password auth and configure email confirmation behavior for local demo/testing.
   - [ ] Set Storage file size limits and allowed MIME types (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`).
