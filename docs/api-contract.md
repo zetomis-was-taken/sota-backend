@@ -1,6 +1,6 @@
 # API Contract (Demo) — Museum Management System
 
-An application-centric Express.js + TypeScript server owns the HTTP data and business API (`/health`, `/api/v1/*`) using Drizzle ORM over `DATABASE_URL`. **Supabase Auth** (`/auth/v1`) handles user authentication, and **Supabase Storage** holds uploaded media objects. Authorization is enforced in Express middleware and services (see `docs/auth-guide.md` and `docs/database-design.md`).
+A traditional **application-first** Express.js + TypeScript server owns the HTTP API (`/health`, `/api/v1/*`), all business logic, validation, authorization/RBAC, user provisioning, and orchestration via Drizzle ORM over `DATABASE_URL`. Postgres stores application data, **Supabase Auth** (`/auth/v1`) handles user authentication, and **Supabase Storage** holds uploaded media objects (see `docs/auth-guide.md` and `docs/database-design.md`).
 
 > Keep this contract updated when adding or changing Express routes. Do not expose direct PostgREST (`/rest/v1`) data endpoints to clients.
 
@@ -48,7 +48,7 @@ Clients use `@supabase/supabase-js` (with the publishable key) against Supabase 
 | POST | `/auth/v1/recover` | `{email}` | `200` |
 | GET | `/auth/v1/verify?token=...&type=signup\|recovery` | — | Email-link redirect |
 
-- An `auth.users` signup trigger (or Express lazy provisioning) creates `public.users` and `user_roles(normal_user)`.
+- Express lazily and idempotently provisions `public.users` and `user_roles(normal_user)` on the first authenticated request (`ensureUserProvisioned`), without relying on a DB signup trigger.
 - Roles are not read from JWT claims; Express checks Postgres on each request so role changes apply immediately.
 
 ## 3. Profile, roles, memberships

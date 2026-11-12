@@ -1,20 +1,20 @@
 # Auth Guide (Demo) — Museum Management System
 
-How authentication and authorization work in the application-centric Express backend with Supabase Auth. Endpoint shapes belong in `docs/api-contract.md`; schema details belong in `docs/database-design.md`.
+How authentication and authorization work in the **application-first** Express backend with Supabase Auth and Postgres persistence. Endpoint shapes belong in `docs/api-contract.md`; schema details belong in `docs/database-design.md`.
 
 ## 1. Principles
 
-1. **Authentication = Supabase Auth. Authorization = Express middleware + Postgres role/membership lookup.** Supabase Auth handles sign-up, login, password recovery, and JWT issuance; Express enforces all permissions on every API route.
+1. **Authentication = Supabase Auth. Authorization & business logic = Express middleware + services.** Supabase Auth handles sign-up, login, password recovery, and JWT issuance; Express enforces all permissions and business rules on every API route. Postgres stores roles/memberships and domain data.
 2. **Clients talk to Supabase Auth for sessions, and to Express (`/api/v1/*`) for application data.** Clients send `Authorization: Bearer <access_token>` to Express and never call PostgREST (`/rest/v1`) directly.
 3. **Roles are stored in Postgres (`user_roles`, `museum_admins`), not in the JWT.** Express queries them per request so role/membership changes or revocations apply immediately.
 4. **Never trust client-supplied identity or privileged fields.** `user_id` always comes from the verified Supabase Auth user, never from request body/query.
-5. **Idempotent user provisioning.** An `auth.users` signup trigger (or Express upsert-on-first-request fallback) creates `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING`.
+5. **Application-side idempotent user provisioning.** Express provisions `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING` on the user's first authenticated request (`ensureUserProvisioned`), rather than relying on a DB signup trigger.
 
 ## 2. Roles
 
 | Role | Granted by | Scope |
 |---|---|---|
-| `normal_user` | Signup trigger / Express fallback | Own profile, carts, orders, invoices |
+| `normal_user` | Express provisioning on first authenticated request | Own profile, carts, orders, invoices |
 | `admin_user` | `super_admin` (SQL) | Managed museums, and only while `museum_admins.status = 'active'` |
 | `super_admin` | SQL only (first row inserted manually) | Everything |
 

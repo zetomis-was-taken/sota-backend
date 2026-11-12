@@ -1,11 +1,11 @@
 # Database Design (Demo) — Museum Management System
 
-Postgres (Supabase-hosted) + Drizzle ORM demo using an application-centric Express.js + TypeScript backend and Supabase Auth. Not production: fake payments, VND only, no refunds, no audit log, no account deletion.
+Postgres (Supabase-hosted) + Drizzle ORM demo using a traditional **application-first** Express.js + TypeScript backend, with Supabase used for data storage, Auth, and Storage. Not production: fake payments, VND only, no refunds, no audit log, no account deletion.
 
 ## 1. Rules
 
-- **Application-centric data access:** Express connects directly to Postgres via `DATABASE_URL` using Drizzle ORM. All authorization, validation, and multi-row transactional writes live in Express middleware and services, not in PostgREST (`/rest/v1`) or PL/pgSQL RPCs.
-- **Defense-in-depth on `public` schema:** Direct client access via PostgREST (`/rest/v1`) is not part of the API. Tables keep RLS enabled (`.enableRLS()` in `src/db/schema/`) with **no public client policies**, blocking unmediated PostgREST reads/writes while Express operates over `DATABASE_URL`.
+- **Application-first architecture:** Express connects directly to Postgres via `DATABASE_URL` using Drizzle ORM. The application layer owns all business logic, authorization/RBAC, validation, user provisioning, state transitions, cross-table rules, and multi-row transactional writes. Postgres is used strictly for data storage, relational/integrity constraints (FKs, `CHECK`s, indexes, `invoice_seq`), and atomic transactions — not for business triggers, PL/pgSQL RPCs, or PostgREST (`/rest/v1`) endpoints.
+- **Defense-in-depth on `public` schema:** Direct client access via PostgREST (`/rest/v1`) is not part of the API. Tables keep RLS enabled (`.enableRLS()` in `src/db/schema/`) with **no public client policies**, blocking unmediated PostgREST reads/writes while Express operates over `DATABASE_URL` (authorization is enforced in Express, not RLS).
 - One cart and one order belong to one museum.
 - A ticket purchase is one order with `visit_date`, `time_slot`, one `entry_code`, and any number of ticket types. Slots are a fixed list; there is no capacity limit.
 - Admins manage only museums where they have an `active` membership **and** the `admin_user` role. They cannot change totals, payment status, or issue refunds.
@@ -16,7 +16,7 @@ Postgres (Supabase-hosted) + Drizzle ORM demo using an application-centric Expre
 
 - Schema `public`; UUID PKs (`gen_random_uuid()`); `timestamptz` UTC; money `numeric(12,2)`.
 - Every table has `id`, `created_at`, `updated_at`, except join tables (`user_roles`, `museum_admins`) and invoice tables (which use `issued_at`).
-- `updated_at` is maintained by a DB trigger (or Drizzle `$onUpdate` consistently across all server writes).
+- `updated_at` is maintained by the application layer via Drizzle `$onUpdate` (`src/db/schema/_helpers.ts`) rather than a DB trigger.
 - `currency` is `text` default `'VND'` with `CHECK (currency = 'VND')`.
 - FKs declare `ON DELETE`. Columns marked “nullable” are optional; everything else is `NOT NULL`.
 
@@ -73,7 +73,7 @@ erDiagram
 **`media_assets`** — `id`; `museum_id` FK `museums(id)` cascade; `entity_type` `media_entity_type`; `entity_id` uuid; `media_type`; `storage_bucket`; `storage_path`; `mime_type`; `sort_order` default 0; `is_primary` default false; `created_by` FK `users(id)` set null (nullable); timestamps.
 
 - Unique `(storage_bucket, storage_path)`; partial unique `(entity_type, entity_id) WHERE is_primary`.
-- No FK is possible for `(entity_type, entity_id)`. Express services (and optionally a DB trigger) verify the target entity exists and belongs to the same `museum_id`.
+- No FK is possible for `(entity_type, entity_id)`. Express services verify the target entity exists and belongs to the same `museum_id` before writing.
 
 **`ticket_types`** — `id`; `museum_id` FK `museums(id)` restrict; `name`; `description` (nullable); `price` `CHECK (price >= 0)`; `currency`; `is_available` default true; timestamps.
 
@@ -85,7 +85,7 @@ erDiagram
 
 **`carts`** — `id`; `user_id` FK `users(id)` cascade; `museum_id` FK `museums(id)` restrict; `status` default `active`; timestamps. Partial unique `(user_id, museum_id) WHERE status = 'active'`.
 
-**`cart_items`** — `id`; `cart_id` FK `carts(id)` cascade; `product_id` FK `souvenir_products(id)` restrict; `quantity` `CHECK (quantity > 0)`; timestamps. Unique `(cart_id, product_id)`; Express services (and optionally a DB trigger) require the product to belong to the cart's museum.
+**`cart_items`** — `id`; `cart_id` FK `carts(id)` cascade; `product_id` FK `souvenir_products(id)` restrict; `quantity` `CHECK (quantity > 0)`; timestamps. Unique `(cart_id, product_id)`; Express services require the product to belong to the cart's museum.
 
 **`shop_orders`** — `id`; `user_id` FK `users(id)` restrict; `museum_id` FK `museums(id)` restrict; `status` default `pending`; `payment_status` default `unpaid`; `subtotal` `CHECK (subtotal >= 0)`; `shipping_fee` default 0 `CHECK (shipping_fee >= 0)`; `total_amount` generated always as `(subtotal + shipping_fee)` stored; `currency`; `shipping_name`; `shipping_phone`; `shipping_address`; `shipping_city` (nullable); timestamps.
 
@@ -105,7 +105,7 @@ erDiagram
 ## 7. Auth and Authorization
 
 1. Supabase Auth creates and manages `auth.users`.
-2. An `auth.users` signup trigger (or idempotent provisioning on first authenticated Express request) creates `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING`.
+2. Express idempotently provisions `public.users` and `user_roles(normal_user)` with `ON CONFLICT DO NOTHING` on the user's first authenticated request (`ensureUserProvisioned`), without relying on a DB signup trigger.
 3. The `super_admin` creates museums and assigns `admin_user` + `museum_admins`.
 4. Express verifies the caller's Bearer JWT via Supabase Auth (`supabase.auth.getUser(token)`) and queries `user_roles` and `museum_admins` from Postgres per request, so role/membership changes apply immediately.
 
