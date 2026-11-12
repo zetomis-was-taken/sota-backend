@@ -1,4 +1,5 @@
 export * from './enums';
+export * from './sequences';
 export * from './users';
 export * from './user-roles';
 export * from './museums';
