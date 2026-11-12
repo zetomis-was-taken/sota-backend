@@ -28,4 +28,15 @@ Museum management demo on Supabase/Postgres. The repository currently contains d
 
 ## Verification
 
-- No build or test tooling is configured in this repository yet. If tooling is added, record the exact commands in this file.
+- **Local setup** (requires Docker or Podman):
+  - Start local stack: `npx --yes supabase start`
+  - Print local URL and anon key: `npx --yes supabase status -o env` (copy `.env.example` to `.env` and fill `SUPABASE_URL` and `SUPABASE_ANON_KEY`; never commit `.env` or expose `service_role`)
+  - Stop local stack: `npx --yes supabase stop`
+- **Migrations & seed**:
+  - Reset local database and apply migrations + `supabase/seed.sql`: `npx --yes supabase db reset`
+  - Apply pending migrations locally without resetting: `npx --yes supabase migration up`
+  - Push migrations to linked remote project: `npx --yes supabase db push`
+- **Tests**:
+  - Database/RLS pgTAP tests (`supabase/tests/`): `npm run test:db` (`npx --yes supabase test db`)
+  - HTTP integration tests (`tests/http/` against `/auth/v1`, `/rest/v1`, `/storage/v1`): `npm run test:http` (`node --env-file-if-exists=.env --test "tests/http/**/*.test.mjs"`)
+  - Full suite: `npm test`
