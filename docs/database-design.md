@@ -4,7 +4,7 @@ Supabase/Postgres demo. Not production: fake payments, VND only, no refunds, no 
 
 ## 1. Rules
 
-- Client → Supabase with the anon key. RLS is the only authorization layer. Multi-row writes go through `SECURITY DEFINER` RPCs; clients never write orders, order items, invoices, or entry codes directly.
+- Client → Supabase with the publishable key. RLS is the only authorization layer. Multi-row writes go through `SECURITY DEFINER` RPCs; clients never write orders, order items, invoices, or entry codes directly.
 - One cart and one order belong to one museum.
 - A ticket purchase is one order with `visit_date`, `time_slot`, one `entry_code`, and any number of ticket types. Slots are a fixed list; there is no capacity limit.
 - Admins manage only museums where they have an `active` membership **and** the `admin_user` role. They cannot change totals, payment status, or issue refunds.

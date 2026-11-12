@@ -1,8 +1,14 @@
 # API Contract (Demo) — Museum Management System
 
-Clients call Supabase directly with the anon key; there is no custom application server (see `docs/database-design.md` §1). This file defines the HTTP surface: PostgREST (`/rest/v1`), Auth (`/auth/v1`), and Storage (`/storage/v1`). Authorization is RLS only; the auth model is in `docs/auth-guide.md`.
+An Express.js + TypeScript server hosts operational endpoints (starting with `GET /health`), while Supabase remains the data, auth, and storage backend using the publishable key and RLS (see `docs/database-design.md` §1). This file defines the HTTP surface: Express server endpoints, PostgREST (`/rest/v1`), Auth (`/auth/v1`), and Storage (`/storage/v1`). Authorization is RLS only; the auth model is in `docs/auth-guide.md`.
 
-> If a server layer is ever introduced, rewrite this contract in the same change. Do not add endpoints that bypass RLS.
+> Keep this contract updated when adding Express routes. Do not add endpoints that bypass RLS.
+
+## 0. Express server endpoints
+
+| Method | Path | Who | Returns |
+|---|---|---|---|
+| GET | `/health` | public | `200` `{status, uptime, timestamp, supabase}` (`supabase` is `"configured"` or `"not_configured"`) |
 
 ## 1. Conventions
 
@@ -12,8 +18,8 @@ Base: `https://<project-ref>.supabase.co`.
 
 | Header | Required | Value |
 |---|---|---|
-| `apikey` | Always | anon key |
-| `Authorization` | Signed-in calls | `Bearer <access_token>` (anon key when signed out) |
+| `apikey` | Always | publishable key (`sb_publishable_...`) |
+| `Authorization` | Signed-in calls | `Bearer <access_token>` (omitted or publishable key when signed out) |
 | `Content-Type` | JSON writes | `application/json` (raw file content type for Storage uploads) |
 | `Prefer` | Writes | `return=representation` to get the written rows; `count=exact` for counts |
 
