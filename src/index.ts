@@ -1,8 +1,9 @@
+import { env } from './config/env';
 import { createApp } from './app';
+import './config/supabase';
 
-const port = Number(process.env.PORT) || 3000;
 const app = createApp();
 
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+app.listen(env.port, () => {
+  console.log(`Server listening on port ${env.port}`);
 });
