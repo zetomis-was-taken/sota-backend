@@ -5,7 +5,7 @@ How to use Supabase Auth correctly. This covers identity, roles, and access chec
 ## 1. Principles
 
 1. **Authentication = Supabase Auth. Authorization = RLS.** There is no other security layer. If a query is allowed, it runs; if not, RLS returns no rows or an error.
-2. **The client uses the anon key plus the user's session.** The `service_role` key bypasses RLS and must never reach the browser or a public bundle.
+2. **The client uses the publishable key plus the user's session.** The secret / `service_role` key bypasses RLS and must never reach the browser or a public bundle.
 3. **Roles are stored in the database, not in the JWT.** A role change applies to the next query, not the next login.
 4. **Never gate data in app code.** UI checks are convenience only; the database decides. Assume any client request can be replayed by hand.
 5. **Idempotent signup.** The signup trigger creates `public.users` and `user_roles(normal_user)`; the client must not create or upsert either row.
@@ -36,7 +36,7 @@ How to use Supabase Auth correctly. This covers identity, roles, and access chec
 
 ## 4. Frontend
 
-- Create one Supabase client with the anon key. Enable session persistence and auto-refresh; for SSR frameworks use `@supabase/ssr` with cookies instead of `localStorage`.
+- Create one Supabase client with the publishable key. Enable session persistence and auto-refresh; for SSR frameworks use `@supabase/ssr` with cookies instead of `localStorage`.
 - **Identity:** call `getUser()` when a decision depends on who the user is (it verifies the token). Use `getSession()` only for cheap UI state.
 - **Session lifecycle:** `signUp` → (email confirmation, if enabled) → `signInWithPassword` → `signOut`. React to `onAuthStateChange` to update the UI; do not poll.
 - **Route guards are UX only.** Redirecting unauthenticated users is fine; hiding admin pages is fine. Neither is security — keep RLS as the enforcement.
@@ -44,7 +44,7 @@ How to use Supabase Auth correctly. This covers identity, roles, and access chec
 - **Errors:** expired/invalid session → sign out and redirect to login. RLS denial (empty result or permission error) → treat as unauthorized; never retry with a privileged key.
 - **Admin UI is scoped to a museum.** Pick the museum first, then filter everything by `museum_id`; do not build a cross-museum admin view for a `normal_user`/`admin_user`.
 - **Fake payment is server-side.** The client never sets `payment_status`, totals, or `entry_code`; it only calls the RPC and displays the result.
-- **No secrets:** only the anon key and the Supabase URL are public configuration.
+- **No secrets:** only the publishable key and the Supabase URL are public configuration.
 
 ## 5. Typical flows
 
