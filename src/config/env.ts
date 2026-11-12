@@ -1,7 +1,9 @@
 import 'dotenv/config';
 
 export const env = {
+  nodeEnv: process.env.NODE_ENV?.trim() || 'development',
   port: Number(process.env.PORT) || 3000,
+  corsOrigin: process.env.CORS_ORIGIN?.trim() || '*',
   databaseUrl: process.env.DATABASE_URL?.trim() ?? '',
   supabaseUrl: process.env.SUPABASE_URL?.trim() ?? '',
   supabasePublishableKey: process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ?? '',
