@@ -1,0 +1,17 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Supabase local state
+supabase/.temp/
+supabase/.branches/
+
+# Node / test tooling
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db

@@ -13,7 +13,7 @@ End-to-end checklist to implement, test, and deploy the Supabase/Postgres backen
   - [x] Enable email/password auth and configure email confirmation behavior for local demo/testing.
   - [x] Set Storage file size limits and allowed MIME types (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`).
   - [x] Verify database timezone stays UTC (`(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date` is handled inside RPCs).
-- [ ] Add `.gitignore` (ignore `.env`, `.env.local`, `supabase/.temp/`, etc.) and `.env.example` containing only `SUPABASE_URL` and `SUPABASE_ANON_KEY` (never expose `service_role`).
+- [x] Add `.gitignore` (ignore `.env`, `.env.local`, `supabase/.temp/`, etc.) and `.env.example` containing only `SUPABASE_URL` and `SUPABASE_ANON_KEY` (never expose `service_role`).
 - [ ] Choose and configure verification tooling (e.g., `supabase test db` with pgTAP + an HTTP integration test runner against local `/auth/v1`, `/rest/v1`, `/storage/v1`).
 - [ ] Record exact local setup, migration, and test commands in [`AGENTS.md`](AGENTS.md).
 
