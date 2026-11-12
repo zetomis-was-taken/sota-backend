@@ -70,7 +70,9 @@ export async function requireSuperAdmin(
   next();
 }
 
-export type MuseumIdResolver = (req: Request) => string | undefined;
+export type MuseumIdResolver = (
+  req: Request
+) => string | undefined | Promise<string | undefined>;
 
 /**
  * Requires `requireAuth` and verifies `canManageMuseum(userId, museumId)` in Postgres.
@@ -91,7 +93,8 @@ export function requireMuseumAdmin(
       throw new UnauthorizedError('Authentication required');
     }
 
-    const museumId = resolveMuseumId(req);
+    const rawMuseumId = await resolveMuseumId(req);
+    const museumId = typeof rawMuseumId === 'string' ? rawMuseumId.trim() : '';
     if (!museumId) {
       throw new BadRequestError('Museum ID is required', 'validation_error');
     }
