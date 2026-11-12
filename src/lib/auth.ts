@@ -5,8 +5,8 @@ import { museumAdmins, userRoles, users } from '../db/schema';
 export type AppRole = 'normal_user' | 'admin_user' | 'super_admin';
 
 /**
- * Idempotently provisions `public.users` and `user_roles(normal_user)` on first
- * authenticated request when an `auth.users` signup trigger has not run yet.
+ * Idempotently provisions `public.users` and `user_roles(normal_user)` on the
+ * user's first authenticated request.
  */
 export async function ensureUserProvisioned(userId: string): Promise<void> {
   await db.transaction(async (tx) => {
