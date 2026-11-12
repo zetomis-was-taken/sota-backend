@@ -30,6 +30,10 @@ export async function getUserRoles(userId: string): Promise<AppRole[]> {
 
 /** Checks whether the user currently holds `super_admin` in Postgres. */
 export async function isSuperAdmin(userId: string): Promise<boolean> {
+  if (!userId) {
+    return false;
+  }
+
   const rows = await db
     .select({ role: userRoles.role })
     .from(userRoles)
@@ -47,6 +51,10 @@ export async function canManageMuseum(
   userId: string,
   museumId: string
 ): Promise<boolean> {
+  if (!userId || !museumId) {
+    return false;
+  }
+
   const roles = await getUserRoles(userId);
 
   if (roles.includes('super_admin')) {
