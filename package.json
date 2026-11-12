@@ -12,7 +12,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:verify": "tsx scripts/verify-db.ts"
   },
   "repository": {
     "type": "git",
