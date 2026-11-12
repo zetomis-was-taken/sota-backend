@@ -28,3 +28,23 @@ export function getSupabaseClient(): SupabaseClient {
   }
   return supabase;
 }
+
+/** Creates a per-request Supabase client forwarding the caller's JWT so RLS applies. */
+export function createUserSupabaseClient(accessToken: string): SupabaseClient {
+  if (!isSupabaseConfigured()) {
+    throw new Error(
+      'Supabase client is not configured. Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in .env.'
+    );
+  }
+  return createClient(env.supabaseUrl, env.supabasePublishableKey, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}

@@ -147,7 +147,7 @@ All functions are `SECURITY DEFINER`, `SET search_path = ''`, validate `auth.uid
 
 1. Lock the cart and its items; require the cart to be `active` and owned by `auth.uid()`.
 2. Lock products with `SELECT ... FOR UPDATE ORDER BY id`; re-check that the museum and products are `published`, plus price and stock.
-3. Insert `shop_orders` and `shop_order_items` with snapshots; compute `subtotal` and apply a server-side flat `shipping_fee` (`line_total` and `total_amount` are generated). Never accept the fee from the client.
+3. Insert `shop_orders` and `shop_order_items` with snapshots; compute `subtotal` and apply a server-side flat `shipping_fee` (`30000.00` VND; `line_total` and `total_amount` are generated). Never accept the fee from the client.
 4. Decrement stock with `UPDATE ... WHERE stock_quantity >= qty`; no row updated means rollback.
 5. Fake payment succeeds: `payment_status = 'paid'`, `status = 'confirmed'`; insert `shop_invoices` with `invoice_number = 'SHP-' || nextval('invoice_seq')`.
 6. Mark the cart `converted`.
@@ -164,9 +164,11 @@ A shared `invoice_seq` plus the `TKT-`/`SHP-` prefixes keeps invoice numbers glo
 
 - Two public buckets for the demo: `museum-media` and `souvenir-media`.
 - Path: `museum_id/entity_type/entity_id/random_filename`; never use the original filename as identity.
-- Admin-only writes; validate size, MIME type, and extension server-side.
+- Admin-only writes; validate size (50 MiB limit) and MIME/extension allow-list (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`) server-side.
 - Public buckets mean anyone with a path can read the object. Use private buckets and signed URLs in production.
 - DB deletes do not remove Storage objects; cleanup is best-effort.
+
+> Migrations (Drizzle schema, triggers, RLS, RPCs, and storage policies) live in `drizzle/` and are applied via `npm run db:migrate` and checked via `npm run db:verify`.
 
 ## 10. Out of scope
 

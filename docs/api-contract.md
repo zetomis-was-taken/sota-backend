@@ -6,6 +6,8 @@ An Express.js + TypeScript server hosts operational endpoints (starting with `GE
 
 ## 0. Express server endpoints
 
+Express stays operational-only (no domain repository layer over `DATABASE_URL` so RLS remains the single authorization layer); any future user-scoped Express route must forward the caller's JWT via `createUserSupabaseClient`.
+
 | Method | Path | Who | Returns |
 |---|---|---|---|
 | GET | `/health` | public | `200` `{status, uptime, timestamp, supabase}` (`supabase` is `"configured"` or `"not_configured"`) |
