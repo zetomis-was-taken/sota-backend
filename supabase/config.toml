@@ -31,6 +31,8 @@ enabled = false
 # key_path = "../certs/my-key.pem"
 
 [db]
+# Database timezone intentionally stays UTC (Supabase Postgres default);
+# date checks in Asia/Ho_Chi_Minh are handled inside RPCs via (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date.
 # Port to use for the local database URL.
 port = 54322
 # Port used by db diff command to initialize the shadow database.
