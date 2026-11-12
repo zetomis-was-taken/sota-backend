@@ -29,6 +29,13 @@
       "when": 1794471847630,
       "tag": "0003_rpcs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794471896609,
+      "tag": "0004_storage_policies",
+      "breakpoints": true
     }
   ]
 }
