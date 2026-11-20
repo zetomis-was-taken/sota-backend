@@ -1,72 +1,31 @@
-import { and, eq } from 'drizzle-orm';
 import { Router } from 'express';
 import { z } from 'zod';
-import { db } from '../db';
-import { museumAdmins, userRoles, users } from '../db/schema';
-import { NotFoundError } from '../lib/errors';
-import { sendSuccess } from '../lib/response';
-import { requireAuth } from '../middleware/auth';
-import { validate } from '../middleware/validate';
+import { sendPaginated, sendSuccess } from '../lib/response';
+import { paginationQuerySchema, type PaginationQuery } from '../lib/validation';
+import { requireAuth, requireSuperAdmin } from '../middleware/auth';
+import { getValidated, validate } from '../middleware/validate';
+import {
+  getProfile,
+  listAdminUsers,
+  updateProfile,
+} from '../services/profile';
 
 export const meRouter = Router();
 
 const patchMeBodySchema = z
   .object({
-    display_name: z.string().min(1).max(255).optional(),
-    phone: z.string().max(20).optional(),
+    display_name: z.string().trim().min(1).max(255).nullable().optional(),
+    phone: z.string().trim().min(1).max(20).nullable().optional(),
   })
+  .strict()
   .refine(
-    (data) => data.display_name !== undefined || data.phone !== undefined,
-    {
-      message: 'At least one field (display_name or phone) must be provided',
-    }
+    (body) => body.display_name !== undefined || body.phone !== undefined,
+    'At least one profile field is required'
   );
 
 meRouter.get('/me', requireAuth, async (req, res) => {
-  const userId = req.auth!.userId;
-
-  const [profile] = await db
-    .select({
-      id: users.id,
-      display_name: users.displayName,
-      phone: users.phone,
-    })
-    .from(users)
-    .where(eq(users.id, userId));
-
-  if (!profile) {
-    throw new NotFoundError('User not found');
-  }
-
-  const roleRows = await db
-    .select({ role: userRoles.role })
-    .from(userRoles)
-    .where(eq(userRoles.userId, userId));
-
-  const roles = roleRows.map((r) => r.role);
-  const hasAdminRole =
-    roles.includes('admin_user') || roles.includes('super_admin');
-
-  const managedMuseums = hasAdminRole
-    ? await db
-        .select({
-          museum_id: museumAdmins.museumId,
-          status: museumAdmins.status,
-        })
-        .from(museumAdmins)
-        .where(
-          and(
-            eq(museumAdmins.userId, userId),
-            eq(museumAdmins.status, 'active')
-          )
-        )
-    : [];
-
-  sendSuccess(res, {
-    ...profile,
-    roles,
-    managed_museums: managedMuseums,
-  });
+  const profile = await getProfile(req.auth!.userId);
+  sendSuccess(res, profile);
 });
 
 meRouter.patch(
@@ -74,31 +33,20 @@ meRouter.patch(
   requireAuth,
   validate({ body: patchMeBodySchema }),
   async (req, res) => {
-    const userId = req.auth!.userId;
-    const body = req.body as z.infer<typeof patchMeBodySchema>;
-
-    const updateValues: { displayName?: string; phone?: string } = {};
-    if (body.display_name !== undefined) {
-      updateValues.displayName = body.display_name;
-    }
-    if (body.phone !== undefined) {
-      updateValues.phone = body.phone;
-    }
-
-    const [updated] = await db
-      .update(users)
-      .set(updateValues)
-      .where(eq(users.id, userId))
-      .returning({
-        id: users.id,
-        display_name: users.displayName,
-        phone: users.phone,
-      });
-
-    if (!updated) {
-      throw new NotFoundError('User not found');
-    }
-
+    const { body } = getValidated<z.infer<typeof patchMeBodySchema>>(req);
+    const updated = await updateProfile(req.auth!.userId, body);
     sendSuccess(res, updated);
+  }
+);
+
+meRouter.get(
+  '/admin/users',
+  requireAuth,
+  requireSuperAdmin,
+  validate({ query: paginationQuerySchema }),
+  async (req, res) => {
+    const { limit, offset } = getValidated<unknown, PaginationQuery>(req).query;
+    const { users, total } = await listAdminUsers(limit, offset);
+    sendPaginated(res, users, { limit, offset, total });
   }
 );
