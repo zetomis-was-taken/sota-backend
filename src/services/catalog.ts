@@ -22,7 +22,7 @@ import type {
   CreateMuseumBody,
   PatchArtifactBody,
   PatchMuseumBody,
-} from '../lib/validation';
+} from '../routes/catalog';
 
 export interface PublicMuseumItem {
   id: string;

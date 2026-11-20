@@ -2,20 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { sendCreated, sendPaginated, sendSuccess } from '../lib/response';
 import {
-  createArtifactBodySchema,
-  createMuseumBodySchema,
   idParamSchema,
-  mediaQuerySchema,
   museumIdParamSchema,
   paginationQuerySchema,
-  patchArtifactBodySchema,
-  patchMuseumBodySchema,
-  type CreateArtifactBody,
-  type CreateMuseumBody,
-  type MediaQuery,
+  uuidSchema,
   type PaginationQuery,
-  type PatchArtifactBody,
-  type PatchMuseumBody,
 } from '../lib/validation';
 import { requireAuth, requireSuperAdmin } from '../middleware/auth';
 import { getValidated, validate } from '../middleware/validate';
@@ -34,6 +25,73 @@ import {
 } from '../services/catalog';
 
 export const catalogRouter = Router();
+
+export const mediaQuerySchema = paginationQuerySchema.extend({
+  entity_type: z.enum(['artifact', 'souvenir']),
+  entity_id: uuidSchema,
+});
+
+export type MediaQuery = z.infer<typeof mediaQuerySchema>;
+
+export const createMuseumBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    slug: z.string().trim().min(1, 'Slug is required'),
+    description: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    cover_image_path: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateMuseumBody = z.infer<typeof createMuseumBodySchema>;
+
+export const patchMuseumBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    slug: z.string().trim().min(1, 'Slug cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    cover_image_path: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchMuseumBody = z.infer<typeof patchMuseumBodySchema>;
+
+export const createArtifactBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    description: z.string().trim().nullable().optional(),
+    period: z.string().trim().nullable().optional(),
+    inventory_code: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateArtifactBody = z.infer<typeof createArtifactBodySchema>;
+
+export const patchArtifactBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    period: z.string().trim().nullable().optional(),
+    inventory_code: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchArtifactBody = z.infer<typeof patchArtifactBodySchema>;
 
 const slugParamSchema = z.object({
   slug: z.string().trim().min(1, 'Slug is required'),
