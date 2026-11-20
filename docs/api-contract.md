@@ -56,9 +56,8 @@ Clients use `@supabase/supabase-js` (with the publishable key) against Supabase 
 | Method | Path | Who | Notes |
 |---|---|---|---|
 | GET | `/api/v1/me` | authenticated | Returns own profile (`id`, `display_name`, `phone`), `roles`, and active `managed_museums` (`museum_id`, `status`) |
-| PATCH | `/api/v1/me` | authenticated | Body: `{display_name?, phone?}` only; allows `null` to clear nullable fields; rejects unknown fields with `400` `validation_error` |
-| GET | `/api/v1/admin/users` | `super_admin` | List all user profiles with roles and museum memberships (all statuses: `active`, `suspended`, `revoked`); paginated (`limit`, `offset`, `total`), ordered by `created_at desc, id asc` |
-
+| PATCH | `/api/v1/me` | authenticated | Body: `{display_name?, phone?}` only |
+| GET | `/api/v1/admin/users` | `super_admin` | List all user profiles with roles and museum memberships |
 
 No API endpoints exist to create/update/delete `user_roles` or `museum_admins`; provisioning is SQL (see `docs/auth-guide.md` §3). `users` has no delete endpoint.
 
