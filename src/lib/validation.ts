@@ -40,6 +40,13 @@ export const paginationQuerySchema = z.object({
 
 export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
 
+export const mediaQuerySchema = paginationQuerySchema.extend({
+  entity_type: z.enum(['artifact', 'souvenir']),
+  entity_id: uuidSchema,
+});
+
+export type MediaQuery = z.infer<typeof mediaQuerySchema>;
+
 const DATE_YYYY_MM_DD_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Validates a `YYYY-MM-DD` calendar date without allowing rollovers (e.g. Feb 30). */

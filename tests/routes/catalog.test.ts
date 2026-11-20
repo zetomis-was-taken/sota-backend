@@ -56,6 +56,22 @@ interface TicketTypeRecord {
   updatedAt: Date;
 }
 
+interface MediaAssetRecord {
+  id: string;
+  museumId: string;
+  entityType: 'artifact' | 'souvenir';
+  entityId: string;
+  mediaType: 'image' | 'video';
+  storageBucket: string;
+  storagePath: string;
+  mimeType: string;
+  sortOrder: number;
+  isPrimary: boolean;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 interface OrderByClause {
   column: string;
   direction: 'asc' | 'desc';
@@ -67,6 +83,7 @@ const { mockState, mockDb } = vi.hoisted(() => {
     artifacts: [] as ArtifactRecord[],
     souvenirProducts: [] as SouvenirProductRecord[],
     ticketTypes: [] as TicketTypeRecord[],
+    mediaAssets: [] as MediaAssetRecord[],
   };
 
   function extractEqFilters(
@@ -196,6 +213,19 @@ const { mockState, mockDb } = vi.hoisted(() => {
             if (options.filters.id) {
               rows = rows.filter((t) => t.id === options.filters.id);
             }
+          } else if (activeTable === 'media_assets') {
+            if (options.filters.museum_id) {
+              rows = rows.filter((m) => m.museum_id === options.filters.museum_id);
+            }
+            if (options.filters.entity_type) {
+              rows = rows.filter((m) => m.entity_type === options.filters.entity_type);
+            }
+            if (options.filters.entity_id) {
+              rows = rows.filter((m) => m.entity_id === options.filters.entity_id);
+            }
+            if (options.filters.id) {
+              rows = rows.filter((m) => m.id === options.filters.id);
+            }
           }
 
           if (options.orderBy.length > 0) {
@@ -322,6 +352,23 @@ const { mockState, mockDb } = vi.hoisted(() => {
                 updated_at: t.updatedAt,
               }));
             }
+            if (tableName === 'media_assets') {
+              return mockState.mediaAssets.map((m) => ({
+                id: m.id,
+                museum_id: m.museumId,
+                entity_type: m.entityType,
+                entity_id: m.entityId,
+                media_type: m.mediaType,
+                storage_bucket: m.storageBucket,
+                storage_path: m.storagePath,
+                mime_type: m.mimeType,
+                sort_order: m.sortOrder,
+                is_primary: m.isPrimary,
+                created_by: m.createdBy,
+                created_at: m.createdAt,
+                updated_at: m.updatedAt,
+              }));
+            }
             return [];
           };
 
@@ -349,6 +396,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
     mockState.artifacts = [];
     mockState.souvenirProducts = [];
     mockState.ticketTypes = [];
+    mockState.mediaAssets = [];
   });
 
   describe('Phase 2.1 — Public Reads: Museums', () => {
@@ -1461,4 +1509,658 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
     });
   });
+
+  describe('Phase 2.3 — Public Reads: GET /api/v1/media', () => {
+    const validMuseumId = '11111111-1111-4111-8111-111111111111';
+    const validArtifactId = 'a1111111-1111-4111-8111-111111111111';
+    const validProductId = 'b1111111-1111-4111-8111-111111111111';
+
+    describe('Validation (400 validation_error)', () => {
+      it('returns 400 when entity_type is missing', async () => {
+        const res = await request(app).get(
+          `/api/v1/media?entity_id=${validArtifactId}`
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 when entity_id is missing', async () => {
+        const res = await request(app).get('/api/v1/media?entity_type=artifact');
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 when entity_type is invalid', async () => {
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=gallery&entity_id=${validArtifactId}`
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 when entity_id is not a valid UUID', async () => {
+        const res = await request(app).get(
+          '/api/v1/media?entity_type=artifact&entity_id=not-a-valid-uuid'
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 when limit is invalid', async () => {
+        const res1 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}&limit=0`
+        );
+        expect(res1.status).toBe(400);
+        expect(res1.body.error.code).toBe('validation_error');
+
+        const res2 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}&limit=101`
+        );
+        expect(res2.status).toBe(400);
+        expect(res2.body.error.code).toBe('validation_error');
+
+        const res3 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}&limit=abc`
+        );
+        expect(res3.status).toBe(400);
+        expect(res3.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 when offset is negative or not a number', async () => {
+        const res1 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}&offset=-1`
+        );
+        expect(res1.status).toBe(400);
+        expect(res1.body.error.code).toBe('validation_error');
+
+        const res2 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}&offset=foo`
+        );
+        expect(res2.status).toBe(400);
+        expect(res2.body.error.code).toBe('validation_error');
+      });
+    });
+
+    describe('Visibility & Parent Guard (404 not_found)', () => {
+      it('returns 404 when target artifact does not exist', async () => {
+        const unknownId = '99999999-9999-4999-8999-999999999999';
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${unknownId}`
+        );
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('not_found');
+      });
+
+      it('returns 404 when target souvenir product does not exist', async () => {
+        const unknownId = '99999999-9999-4999-8999-999999999999';
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=souvenir&entity_id=${unknownId}`
+        );
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('not_found');
+      });
+
+      it('returns 404 when artifact is draft or archived', async () => {
+        mockState.museums.push({
+          id: validMuseumId,
+          name: 'Published Museum',
+          slug: 'published-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        const draftArtifactId = 'a2222222-2222-4222-8222-222222222222';
+        const archivedArtifactId = 'a3333333-3333-4333-8333-333333333333';
+
+        mockState.artifacts.push(
+          {
+            id: draftArtifactId,
+            museumId: validMuseumId,
+            name: 'Draft Artifact',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-DRAFT',
+            status: 'draft',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: archivedArtifactId,
+            museumId: validMuseumId,
+            name: 'Archived Artifact',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-ARCHIVED',
+            status: 'archived',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          }
+        );
+
+        const res1 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${draftArtifactId}`
+        );
+        expect(res1.status).toBe(404);
+        expect(res1.body.error.code).toBe('not_found');
+
+        const res2 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${archivedArtifactId}`
+        );
+        expect(res2.status).toBe(404);
+        expect(res2.body.error.code).toBe('not_found');
+      });
+
+      it('returns 404 when souvenir product is draft or archived', async () => {
+        mockState.museums.push({
+          id: validMuseumId,
+          name: 'Published Museum',
+          slug: 'published-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        const draftProductId = 'b2222222-2222-4222-8222-222222222222';
+        const archivedProductId = 'b3333333-3333-4333-8333-333333333333';
+
+        mockState.souvenirProducts.push(
+          {
+            id: draftProductId,
+            museumId: validMuseumId,
+            name: 'Draft Product',
+            description: null,
+            sku: 'SKU-DRAFT',
+            price: '10000.00',
+            currency: 'VND',
+            stockQuantity: 10,
+            status: 'draft',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: archivedProductId,
+            museumId: validMuseumId,
+            name: 'Archived Product',
+            description: null,
+            sku: 'SKU-ARCHIVED',
+            price: '20000.00',
+            currency: 'VND',
+            stockQuantity: 10,
+            status: 'archived',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          }
+        );
+
+        const res1 = await request(app).get(
+          `/api/v1/media?entity_type=souvenir&entity_id=${draftProductId}`
+        );
+        expect(res1.status).toBe(404);
+        expect(res1.body.error.code).toBe('not_found');
+
+        const res2 = await request(app).get(
+          `/api/v1/media?entity_type=souvenir&entity_id=${archivedProductId}`
+        );
+        expect(res2.status).toBe(404);
+        expect(res2.body.error.code).toBe('not_found');
+      });
+
+      it('returns 404 when published artifact has draft or archived parent museum', async () => {
+        const draftMuseumId = '22222222-2222-4222-8222-222222222222';
+        const archivedMuseumId = '33333333-3333-4333-8333-333333333333';
+
+        mockState.museums.push(
+          {
+            id: draftMuseumId,
+            name: 'Draft Museum',
+            slug: 'draft-museum',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'draft',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: archivedMuseumId,
+            name: 'Archived Museum',
+            slug: 'archived-museum',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'archived',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          }
+        );
+
+        const artifactInDraftId = 'a4444444-4444-4444-8444-444444444444';
+        const artifactInArchivedId = 'a5555555-5555-4555-8555-555555555555';
+
+        mockState.artifacts.push(
+          {
+            id: artifactInDraftId,
+            museumId: draftMuseumId,
+            name: 'Published Artifact In Draft Museum',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-04',
+            status: 'published',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: artifactInArchivedId,
+            museumId: archivedMuseumId,
+            name: 'Published Artifact In Archived Museum',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-05',
+            status: 'published',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          }
+        );
+
+        const res1 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${artifactInDraftId}`
+        );
+        expect(res1.status).toBe(404);
+        expect(res1.body.error.code).toBe('not_found');
+
+        const res2 = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${artifactInArchivedId}`
+        );
+        expect(res2.status).toBe(404);
+        expect(res2.body.error.code).toBe('not_found');
+      });
+
+      it('returns 404 when published souvenir product has draft or archived parent museum', async () => {
+        const draftMuseumId = '22222222-2222-4222-8222-222222222222';
+        const archivedMuseumId = '33333333-3333-4333-8333-333333333333';
+
+        mockState.museums.push(
+          {
+            id: draftMuseumId,
+            name: 'Draft Museum',
+            slug: 'draft-museum',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'draft',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: archivedMuseumId,
+            name: 'Archived Museum',
+            slug: 'archived-museum',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'archived',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          }
+        );
+
+        const productInDraftId = 'b4444444-4444-4444-8444-444444444444';
+        const productInArchivedId = 'b5555555-5555-4555-8555-555555555555';
+
+        mockState.souvenirProducts.push(
+          {
+            id: productInDraftId,
+            museumId: draftMuseumId,
+            name: 'Published Product In Draft Museum',
+            description: null,
+            sku: 'SKU-04',
+            price: '50000.00',
+            currency: 'VND',
+            stockQuantity: 10,
+            status: 'published',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: productInArchivedId,
+            museumId: archivedMuseumId,
+            name: 'Published Product In Archived Museum',
+            description: null,
+            sku: 'SKU-05',
+            price: '60000.00',
+            currency: 'VND',
+            stockQuantity: 10,
+            status: 'published',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          }
+        );
+
+        const res1 = await request(app).get(
+          `/api/v1/media?entity_type=souvenir&entity_id=${productInDraftId}`
+        );
+        expect(res1.status).toBe(404);
+        expect(res1.body.error.code).toBe('not_found');
+
+        const res2 = await request(app).get(
+          `/api/v1/media?entity_type=souvenir&entity_id=${productInArchivedId}`
+        );
+        expect(res2.status).toBe(404);
+        expect(res2.body.error.code).toBe('not_found');
+      });
+    });
+
+    describe('Listing, Ordering & Pagination (200 OK)', () => {
+      it('returns empty array with pagination total=0 when published entity has no media', async () => {
+        mockState.museums.push({
+          id: validMuseumId,
+          name: 'Published Museum',
+          slug: 'published-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        mockState.artifacts.push({
+          id: validArtifactId,
+          museumId: validMuseumId,
+          name: 'Artifact Without Media',
+          description: null,
+          period: null,
+          inventoryCode: 'INV-NO-MEDIA',
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}`
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({
+          data: [],
+          pagination: {
+            limit: 24,
+            offset: 0,
+            total: 0,
+          },
+        });
+      });
+
+      it('returns media ordered by sort_order ASC with deterministic secondary sort', async () => {
+        mockState.museums.push({
+          id: validMuseumId,
+          name: 'Published Museum',
+          slug: 'published-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        mockState.artifacts.push({
+          id: validArtifactId,
+          museumId: validMuseumId,
+          name: 'Artifact With Media',
+          description: null,
+          period: null,
+          inventoryCode: 'INV-MEDIA',
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        const media1 = 'm1111111-1111-4111-8111-111111111111';
+        const media2 = 'm2222222-2222-4222-8222-222222222222';
+        const media3 = 'm3333333-3333-4333-8333-333333333333';
+
+        mockState.mediaAssets.push(
+          {
+            id: media3,
+            museumId: validMuseumId,
+            entityType: 'artifact',
+            entityId: validArtifactId,
+            mediaType: 'image',
+            storageBucket: 'museum-media',
+            storagePath: 'path3.jpg',
+            mimeType: 'image/jpeg',
+            sortOrder: 20,
+            isPrimary: false,
+            createdBy: null,
+            createdAt: new Date('2026-01-03T10:00:00Z'),
+            updatedAt: new Date('2026-01-03T10:00:00Z'),
+          },
+          {
+            id: media1,
+            museumId: validMuseumId,
+            entityType: 'artifact',
+            entityId: validArtifactId,
+            mediaType: 'image',
+            storageBucket: 'museum-media',
+            storagePath: 'path1.jpg',
+            mimeType: 'image/jpeg',
+            sortOrder: 1,
+            isPrimary: true,
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: media2,
+            museumId: validMuseumId,
+            entityType: 'artifact',
+            entityId: validArtifactId,
+            mediaType: 'video',
+            storageBucket: 'museum-media',
+            storagePath: 'path2.mp4',
+            mimeType: 'video/mp4',
+            sortOrder: 10,
+            isPrimary: false,
+            createdBy: null,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          }
+        );
+
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}`
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination.total).toBe(3);
+        expect(res.body.data).toHaveLength(3);
+        expect(res.body.data.map((m: any) => m.id)).toEqual([
+          media1,
+          media2,
+          media3,
+        ]);
+        expect(res.body.data[0]).toEqual({
+          id: media1,
+          museum_id: validMuseumId,
+          entity_type: 'artifact',
+          entity_id: validArtifactId,
+          media_type: 'image',
+          storage_bucket: 'museum-media',
+          storage_path: 'path1.jpg',
+          mime_type: 'image/jpeg',
+          sort_order: 1,
+          is_primary: true,
+          created_by: null,
+          created_at: '2026-01-01T10:00:00.000Z',
+          updated_at: '2026-01-01T10:00:00.000Z',
+        });
+      });
+
+      it('works for souvenir products and respects pagination parameters', async () => {
+        mockState.museums.push({
+          id: validMuseumId,
+          name: 'Published Museum',
+          slug: 'published-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        mockState.souvenirProducts.push({
+          id: validProductId,
+          museumId: validMuseumId,
+          name: 'Mug',
+          description: null,
+          sku: 'MUG-01',
+          price: '80000.00',
+          currency: 'VND',
+          stockQuantity: 20,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        const m1 = 'm1111111-1111-4111-8111-111111111111';
+        const m2 = 'm2222222-2222-4222-8222-222222222222';
+        const m3 = 'm3333333-3333-4333-8333-333333333333';
+
+        mockState.mediaAssets.push(
+          {
+            id: m1,
+            museumId: validMuseumId,
+            entityType: 'souvenir',
+            entityId: validProductId,
+            mediaType: 'image',
+            storageBucket: 'souvenir-media',
+            storagePath: 'p1.jpg',
+            mimeType: 'image/jpeg',
+            sortOrder: 1,
+            isPrimary: true,
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: m2,
+            museumId: validMuseumId,
+            entityType: 'souvenir',
+            entityId: validProductId,
+            mediaType: 'image',
+            storageBucket: 'souvenir-media',
+            storagePath: 'p2.jpg',
+            mimeType: 'image/jpeg',
+            sortOrder: 2,
+            isPrimary: false,
+            createdBy: null,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          },
+          {
+            id: m3,
+            museumId: validMuseumId,
+            entityType: 'souvenir',
+            entityId: validProductId,
+            mediaType: 'image',
+            storageBucket: 'souvenir-media',
+            storagePath: 'p3.jpg',
+            mimeType: 'image/jpeg',
+            sortOrder: 3,
+            isPrimary: false,
+            createdBy: null,
+            createdAt: new Date('2026-01-03T10:00:00Z'),
+            updatedAt: new Date('2026-01-03T10:00:00Z'),
+          }
+        );
+
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=souvenir&entity_id=${validProductId}&limit=2&offset=1`
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination).toEqual({
+          limit: 2,
+          offset: 1,
+          total: 3,
+        });
+        expect(res.body.data).toHaveLength(2);
+        expect(res.body.data[0].id).toBe(m2);
+        expect(res.body.data[1].id).toBe(m3);
+      });
+
+      it('is accessible publicly without an Authorization header', async () => {
+        mockState.museums.push({
+          id: validMuseumId,
+          name: 'Published Museum',
+          slug: 'published-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        mockState.artifacts.push({
+          id: validArtifactId,
+          museumId: validMuseumId,
+          name: 'Artifact',
+          description: null,
+          period: null,
+          inventoryCode: 'INV-PUBLIC',
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        const res = await request(app).get(
+          `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}`
+        );
+        expect(res.status).toBe(200);
+      });
+    });
+  });
 });
+

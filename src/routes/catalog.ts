@@ -3,14 +3,17 @@ import { z } from 'zod';
 import { sendPaginated, sendSuccess } from '../lib/response';
 import {
   idParamSchema,
+  mediaQuerySchema,
   museumIdParamSchema,
   paginationQuerySchema,
+  type MediaQuery,
   type PaginationQuery,
 } from '../lib/validation';
 import { getValidated, validate } from '../middleware/validate';
 import {
   getPublicArtifactById,
   getPublicMuseumBySlug,
+  listPublicMedia,
   listPublicMuseumArtifacts,
   listPublicMuseums,
 } from '../services/catalog';
@@ -78,4 +81,24 @@ catalogRouter.get(
     sendSuccess(res, artifact);
   }
 );
+
+catalogRouter.get(
+  '/media',
+  validate({ query: mediaQuerySchema }),
+  async (req, res) => {
+    const { query } = getValidated<unknown, MediaQuery>(req);
+    const { media, total } = await listPublicMedia(
+      query.entity_type,
+      query.entity_id,
+      query.limit,
+      query.offset
+    );
+    sendPaginated(res, media, {
+      limit: query.limit,
+      offset: query.offset,
+      total,
+    });
+  }
+);
+
 

@@ -1,6 +1,12 @@
 import { and, asc, count, desc, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { artifacts, museums, souvenirProducts, ticketTypes } from '../db/schema';
+import {
+  artifacts,
+  mediaAssets,
+  museums,
+  souvenirProducts,
+  ticketTypes,
+} from '../db/schema';
 import { NotFoundError } from '../lib/errors';
 
 export interface PublicMuseumItem {
@@ -73,6 +79,27 @@ export interface ListPublicArtifactsResult {
   total: number;
 }
 
+export interface PublicMediaItem {
+  id: string;
+  museum_id: string;
+  entity_type: 'artifact' | 'souvenir';
+  entity_id: string;
+  media_type: 'image' | 'video';
+  storage_bucket: string;
+  storage_path: string;
+  mime_type: string;
+  sort_order: number;
+  is_primary: boolean;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ListPublicMediaResult {
+  media: PublicMediaItem[];
+  total: number;
+}
+
 const publicMuseumFields = {
   id: museums.id,
   name: museums.name,
@@ -125,6 +152,22 @@ const publicTicketTypeFields = {
   is_available: ticketTypes.isAvailable,
   created_at: ticketTypes.createdAt,
   updated_at: ticketTypes.updatedAt,
+};
+
+const publicMediaFields = {
+  id: mediaAssets.id,
+  museum_id: mediaAssets.museumId,
+  entity_type: mediaAssets.entityType,
+  entity_id: mediaAssets.entityId,
+  media_type: mediaAssets.mediaType,
+  storage_bucket: mediaAssets.storageBucket,
+  storage_path: mediaAssets.storagePath,
+  mime_type: mediaAssets.mimeType,
+  sort_order: mediaAssets.sortOrder,
+  is_primary: mediaAssets.isPrimary,
+  created_by: mediaAssets.createdBy,
+  created_at: mediaAssets.createdAt,
+  updated_at: mediaAssets.updatedAt,
 };
 
 /** Lists published museums with limit and offset. */
@@ -274,5 +317,76 @@ export async function getPublicArtifactById(
   }
 
   return artifact;
+}
+
+/** Lists published media assets for a published artifact or souvenir product. */
+export async function listPublicMedia(
+  entityType: 'artifact' | 'souvenir',
+  entityId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicMediaResult> {
+  let museumId: string;
+
+  if (entityType === 'artifact') {
+    const [artifact] = await db
+      .select({ museumId: artifacts.museumId })
+      .from(artifacts)
+      .where(and(eq(artifacts.id, entityId), eq(artifacts.status, 'published')));
+
+    if (!artifact) {
+      throw new NotFoundError('Entity not found');
+    }
+    museumId = artifact.museumId;
+  } else {
+    const [product] = await db
+      .select({ museumId: souvenirProducts.museumId })
+      .from(souvenirProducts)
+      .where(and(eq(souvenirProducts.id, entityId), eq(souvenirProducts.status, 'published')));
+
+    if (!product) {
+      throw new NotFoundError('Entity not found');
+    }
+    museumId = product.museumId;
+  }
+
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(and(eq(museums.id, museumId), eq(museums.status, 'published')));
+
+  if (!museum) {
+    throw new NotFoundError('Entity not found');
+  }
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(mediaAssets)
+    .where(
+      and(
+        eq(mediaAssets.museumId, museumId),
+        eq(mediaAssets.entityType, entityType),
+        eq(mediaAssets.entityId, entityId)
+      )
+    );
+
+  const mediaRows = await db
+    .select(publicMediaFields)
+    .from(mediaAssets)
+    .where(
+      and(
+        eq(mediaAssets.museumId, museumId),
+        eq(mediaAssets.entityType, entityType),
+        eq(mediaAssets.entityId, entityId)
+      )
+    )
+    .orderBy(asc(mediaAssets.sortOrder), asc(mediaAssets.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    media: mediaRows,
+    total: Number(total),
+  };
 }
 
