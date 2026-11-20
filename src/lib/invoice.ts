@@ -20,7 +20,7 @@ export function generateEntryCode(): string {
  */
 export async function nextInvoiceNumber(
   prefix: 'TKT' | 'SHP',
-  tx: { execute: (query: any) => Promise<any> }
+  tx: DrizzleTransaction
 ): Promise<string> {
   const result = await tx.execute(
     sql<{ seq: string }>`SELECT nextval('invoice_seq')::text AS seq`
