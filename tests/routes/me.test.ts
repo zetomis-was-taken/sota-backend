@@ -82,6 +82,37 @@ const { mockGetUser, mockState, mockTxInsert, mockDb } = vi.hoisted(() => {
         await fn({ insert: mockTxInsert });
       }
     ),
+    update: vi.fn((_table: unknown) => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn((condition: unknown) => {
+          const filters = extractEqFilters(condition);
+          const userId = String(filters.id ?? '');
+          const user = mockState.users.get(userId);
+
+          const doUpdate = () => {
+            if (!user) return [];
+            if (values.displayName !== undefined) {
+              user.displayName = values.displayName as string;
+            }
+            if (values.phone !== undefined) {
+              user.phone = values.phone as string;
+            }
+            mockState.users.set(userId, user);
+            return [
+              {
+                id: user.id,
+                display_name: user.displayName,
+                phone: user.phone,
+              },
+            ];
+          };
+
+          return {
+            returning: vi.fn(async () => doUpdate()),
+          };
+        }),
+      })),
+    })),
     select: vi.fn((fields: Record<string, unknown>) => ({
       from: vi.fn(() => ({
         where: vi.fn((condition: unknown) => {
@@ -328,3 +359,175 @@ describe('GET /api/v1/me', () => {
     expect(res.body.error.code).toBe('not_found');
   });
 });
+
+describe('PATCH /api/v1/me', () => {
+  const app = createApp();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.users.clear();
+    mockState.userRoles.clear();
+    mockState.memberships = [];
+  });
+
+  it('returns 401 when no token is provided', async () => {
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .send({ display_name: 'Duy' });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+  });
+
+  it('updates display_name and phone, strips extra fields like role', async () => {
+    const userId = '11111111-1111-4111-8111-111111111111';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'duy@museum.vn' } },
+      error: null,
+    });
+
+    mockState.users.set(userId, {
+      id: userId,
+      displayName: 'Old Name',
+      phone: '0900000000',
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({
+        display_name: 'Duy Nguyen',
+        phone: '0901234567',
+        role: 'super_admin',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      data: {
+        id: userId,
+        display_name: 'Duy Nguyen',
+        phone: '0901234567',
+      },
+    });
+
+    expect(mockState.users.get(userId)).toEqual({
+      id: userId,
+      displayName: 'Duy Nguyen',
+      phone: '0901234567',
+    });
+  });
+
+  it('updates only display_name without altering existing phone', async () => {
+    const userId = '22222222-2222-4222-8222-222222222222';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'user@museum.vn' } },
+      error: null,
+    });
+
+    mockState.users.set(userId, {
+      id: userId,
+      displayName: 'Old Name',
+      phone: '0988888888',
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ display_name: 'New Name' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({
+      id: userId,
+      display_name: 'New Name',
+      phone: '0988888888',
+    });
+  });
+
+  it('returns 400 validation_error when body contains only unknown fields', async () => {
+    const userId = '33333333-3333-4333-8333-333333333333';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'user@museum.vn' } },
+      error: null,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ role: 'super_admin' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('returns 400 validation_error when body is empty', async () => {
+    const userId = '33333333-3333-4333-8333-333333333333';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'user@museum.vn' } },
+      error: null,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('returns 400 validation_error when display_name is empty string', async () => {
+    const userId = '33333333-3333-4333-8333-333333333333';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'user@museum.vn' } },
+      error: null,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ display_name: '' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('returns 400 validation_error when phone exceeds 20 characters', async () => {
+    const userId = '33333333-3333-4333-8333-333333333333';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'user@museum.vn' } },
+      error: null,
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ phone: '123456789012345678901' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('returns 404 when user is not found in database', async () => {
+    const missingUserId = '99999999-9999-4999-8999-999999999999';
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: missingUserId, email: 'missing@museum.vn' } },
+      error: null,
+    });
+
+    mockState.users.delete(missingUserId);
+    mockTxInsert.mockReturnValueOnce({
+      values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn(async () => {}),
+      })),
+    });
+
+    const res = await request(app)
+      .patch('/api/v1/me')
+      .set('Authorization', 'Bearer valid-token')
+      .send({ display_name: 'Duy' });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('not_found');
+  });
+});
+
