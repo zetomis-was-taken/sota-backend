@@ -68,6 +68,11 @@ export interface ListPublicMuseumsResult {
   total: number;
 }
 
+export interface ListPublicArtifactsResult {
+  artifacts: PublicArtifactItem[];
+  total: number;
+}
+
 const publicMuseumFields = {
   id: museums.id,
   name: museums.name,
@@ -196,3 +201,78 @@ export async function getPublicMuseumBySlug(
     ticket_types: ticketTypeRows,
   };
 }
+
+/** Lists published artifacts of a published museum with limit and offset. */
+export async function listPublicMuseumArtifacts(
+  museumId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicArtifactsResult> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(and(eq(museums.id, museumId), eq(museums.status, 'published')));
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(artifacts)
+    .where(
+      and(
+        eq(artifacts.museumId, museumId),
+        eq(artifacts.status, 'published')
+      )
+    );
+
+  const artifactRows = await db
+    .select(publicArtifactFields)
+    .from(artifacts)
+    .where(
+      and(
+        eq(artifacts.museumId, museumId),
+        eq(artifacts.status, 'published')
+      )
+    )
+    .orderBy(desc(artifacts.createdAt), asc(artifacts.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    artifacts: artifactRows,
+    total: Number(total),
+  };
+}
+
+/** Fetches a published artifact by id. Throws 404 if the artifact or its parent museum is not published. */
+export async function getPublicArtifactById(
+  id: string
+): Promise<PublicArtifactItem> {
+  const [artifact] = await db
+    .select(publicArtifactFields)
+    .from(artifacts)
+    .where(and(eq(artifacts.id, id), eq(artifacts.status, 'published')));
+
+  if (!artifact) {
+    throw new NotFoundError('Artifact not found');
+  }
+
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(
+      and(
+        eq(museums.id, artifact.museum_id),
+        eq(museums.status, 'published')
+      )
+    );
+
+  if (!museum) {
+    throw new NotFoundError('Artifact not found');
+  }
+
+  return artifact;
+}
+

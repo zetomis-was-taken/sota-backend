@@ -1,10 +1,17 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { sendPaginated, sendSuccess } from '../lib/response';
-import { paginationQuerySchema, type PaginationQuery } from '../lib/validation';
+import {
+  idParamSchema,
+  museumIdParamSchema,
+  paginationQuerySchema,
+  type PaginationQuery,
+} from '../lib/validation';
 import { getValidated, validate } from '../middleware/validate';
 import {
+  getPublicArtifactById,
   getPublicMuseumBySlug,
+  listPublicMuseumArtifacts,
   listPublicMuseums,
 } from '../services/catalog';
 
@@ -35,3 +42,40 @@ catalogRouter.get(
     sendSuccess(res, museum);
   }
 );
+
+catalogRouter.get(
+  '/museums/:museumId/artifacts',
+  validate({ params: museumIdParamSchema, query: paginationQuerySchema }),
+  async (req, res) => {
+    const { params, query } = getValidated<
+      unknown,
+      PaginationQuery,
+      z.infer<typeof museumIdParamSchema>
+    >(req);
+    const { artifacts, total } = await listPublicMuseumArtifacts(
+      params.museumId,
+      query.limit,
+      query.offset
+    );
+    sendPaginated(res, artifacts, {
+      limit: query.limit,
+      offset: query.offset,
+      total,
+    });
+  }
+);
+
+catalogRouter.get(
+  '/artifacts/:id',
+  validate({ params: idParamSchema }),
+  async (req, res) => {
+    const { id } = getValidated<
+      unknown,
+      unknown,
+      z.infer<typeof idParamSchema>
+    >(req).params;
+    const artifact = await getPublicArtifactById(id);
+    sendSuccess(res, artifact);
+  }
+);
+
