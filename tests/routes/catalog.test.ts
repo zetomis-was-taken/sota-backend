@@ -729,6 +729,138 @@ import { createApp } from '../../src/app';
 const app = createApp();
 
 describe('Phase 2 — Catalog Public Reads', () => {
+  const defaultDate = new Date('2026-01-01T10:00:00Z');
+  const superAdminId = '00000000-0000-4000-8000-000000000001';
+  const adminUserId = '00000000-0000-4000-8000-000000000002';
+  const normalUserId = '00000000-0000-4000-8000-000000000003';
+
+  function fakeMuseum(overrides: Partial<MuseumRecord> = {}): MuseumRecord {
+    const createdAt = overrides.createdAt ?? defaultDate;
+    return {
+      id: '11111111-1111-1111-1111-111111111111',
+      name: 'Museum',
+      slug: 'museum-slug',
+      description: null,
+      address: null,
+      city: null,
+      coverImagePath: null,
+      status: 'published',
+      createdBy: null,
+      createdAt,
+      updatedAt: overrides.updatedAt ?? createdAt,
+      ...overrides,
+    };
+  }
+
+  function fakeArtifact(overrides: Partial<ArtifactRecord> = {}): ArtifactRecord {
+    const createdAt = overrides.createdAt ?? defaultDate;
+    return {
+      id: 'a1111111-1111-1111-1111-111111111111',
+      museumId: '11111111-1111-1111-1111-111111111111',
+      name: 'Artifact',
+      description: null,
+      period: null,
+      inventoryCode: null,
+      status: 'published',
+      createdBy: null,
+      createdAt,
+      updatedAt: overrides.updatedAt ?? createdAt,
+      ...overrides,
+    };
+  }
+
+  function fakeProduct(overrides: Partial<SouvenirProductRecord> = {}): SouvenirProductRecord {
+    const createdAt = overrides.createdAt ?? defaultDate;
+    return {
+      id: 'p1111111-1111-1111-1111-111111111111',
+      museumId: '11111111-1111-1111-1111-111111111111',
+      name: 'Souvenir Product',
+      description: null,
+      sku: null,
+      price: '100000',
+      currency: 'VND',
+      stockQuantity: 10,
+      status: 'published',
+      createdBy: null,
+      createdAt,
+      updatedAt: overrides.updatedAt ?? createdAt,
+      ...overrides,
+    };
+  }
+
+  function fakeTicketType(overrides: Partial<TicketTypeRecord> = {}): TicketTypeRecord {
+    const createdAt = overrides.createdAt ?? defaultDate;
+    return {
+      id: 't1111111-1111-1111-1111-111111111111',
+      museumId: '11111111-1111-1111-1111-111111111111',
+      name: 'Standard Ticket',
+      description: null,
+      price: '50000',
+      currency: 'VND',
+      isAvailable: true,
+      createdAt,
+      updatedAt: overrides.updatedAt ?? createdAt,
+      ...overrides,
+    };
+  }
+
+  function fakeMedia(overrides: Partial<MediaAssetRecord> = {}): MediaAssetRecord {
+    const createdAt = overrides.createdAt ?? defaultDate;
+    return {
+      id: 'm1111111-1111-1111-1111-111111111111',
+      museumId: '11111111-1111-1111-1111-111111111111',
+      entityType: 'artifact',
+      entityId: 'a1111111-1111-1111-1111-111111111111',
+      mediaType: 'image',
+      storageBucket: 'museum-media',
+      storagePath: 'artifacts/sample.jpg',
+      mimeType: 'image/jpeg',
+      sortOrder: 0,
+      isPrimary: false,
+      createdBy: null,
+      createdAt,
+      updatedAt: overrides.updatedAt ?? createdAt,
+      ...overrides,
+    };
+  }
+
+  function authAsSuperAdmin(userId = superAdminId) {
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'super@museum.vn' } },
+    });
+    mockState.userRoles.set(userId, new Set(['super_admin', 'normal_user']));
+    mockState.users.add(userId);
+    return userId;
+  }
+
+  function authAsAdminUser(
+    userId = adminUserId,
+    memberships: { museumId: string; status?: MembershipStatus }[] = []
+  ) {
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'admin@museum.vn' } },
+    });
+    mockState.userRoles.set(userId, new Set(['admin_user', 'normal_user']));
+    mockState.users.add(userId);
+    for (const m of memberships) {
+      mockState.memberships.push({
+        userId,
+        museumId: m.museumId,
+        status: m.status ?? 'active',
+      });
+    }
+    return userId;
+  }
+
+  function authAsNormalUser(userId = normalUserId) {
+    mockGetUser.mockResolvedValueOnce({
+      data: { user: { id: userId, email: 'user@museum.vn' } },
+    });
+    mockState.userRoles.set(userId, new Set(['normal_user']));
+    mockState.users.add(userId);
+    return userId;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetUser.mockReset();
@@ -760,45 +892,9 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns only published museums and omits draft and archived museums', async () => {
         mockState.museums.push(
-          {
-            id: '11111111-1111-1111-1111-111111111111',
-            name: 'Published Museum A',
-            slug: 'museum-a',
-            description: 'Desc A',
-            address: '123 St',
-            city: 'Hanoi',
-            coverImagePath: '/covers/a.jpg',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: '22222222-2222-2222-2222-222222222222',
-            name: 'Draft Museum B',
-            slug: 'museum-b',
-            description: 'Desc B',
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: '33333333-3333-3333-3333-333333333333',
-            name: 'Archived Museum C',
-            slug: 'museum-c',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          }
+          fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Published Museum A', slug: 'museum-a', description: 'Desc A', address: '123 St', city: 'Hanoi', coverImagePath: '/covers/a.jpg' }),
+          fakeMuseum({ id: '22222222-2222-2222-2222-222222222222', name: 'Draft Museum B', slug: 'museum-b', description: 'Desc B', status: 'draft', createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeMuseum({ id: '33333333-3333-3333-3333-333333333333', name: 'Archived Museum C', slug: 'museum-c', status: 'archived', createdAt: new Date('2026-01-03T10:00:00Z') }),
         );
 
         const res = await request(app).get('/api/v1/museums');
@@ -812,45 +908,9 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns published museums ordered by created_at DESC (newest first)', async () => {
         mockState.museums.push(
-          {
-            id: '11111111-1111-1111-1111-111111111111',
-            name: 'Oldest Museum',
-            slug: 'oldest-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: '22222222-2222-2222-2222-222222222222',
-            name: 'Middle Museum',
-            slug: 'middle-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-15T10:00:00Z'),
-            updatedAt: new Date('2026-01-15T10:00:00Z'),
-          },
-          {
-            id: '33333333-3333-3333-3333-333333333333',
-            name: 'Newest Museum',
-            slug: 'newest-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-02-01T10:00:00Z'),
-            updatedAt: new Date('2026-02-01T10:00:00Z'),
-          }
+          fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Oldest Museum', slug: 'oldest-museum' }),
+          fakeMuseum({ id: '22222222-2222-2222-2222-222222222222', name: 'Middle Museum', slug: 'middle-museum', createdAt: new Date('2026-01-15T10:00:00Z') }),
+          fakeMuseum({ id: '33333333-3333-3333-3333-333333333333', name: 'Newest Museum', slug: 'newest-museum', createdAt: new Date('2026-02-01T10:00:00Z') }),
         );
 
         const res = await request(app).get('/api/v1/museums');
@@ -866,45 +926,9 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('respects limit and offset pagination parameters with created_at DESC order', async () => {
         mockState.museums.push(
-          {
-            id: '11111111-1111-1111-1111-111111111111',
-            name: 'Museum 1 (Oldest)',
-            slug: 'museum-1',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: '22222222-2222-2222-2222-222222222222',
-            name: 'Museum 2 (Middle)',
-            slug: 'museum-2',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: '33333333-3333-3333-3333-333333333333',
-            name: 'Museum 3 (Newest)',
-            slug: 'museum-3',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          }
+          fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Museum 1 (Oldest)', slug: 'museum-1' }),
+          fakeMuseum({ id: '22222222-2222-2222-2222-222222222222', name: 'Museum 2 (Middle)', slug: 'museum-2', createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeMuseum({ id: '33333333-3333-3333-3333-333333333333', name: 'Museum 3 (Newest)', slug: 'museum-3', createdAt: new Date('2026-01-03T10:00:00Z') }),
         );
 
         const resPage1 = await request(app).get('/api/v1/museums?limit=1&offset=0');
@@ -967,19 +991,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns 404 for draft museum', async () => {
-        mockState.museums.push({
-          id: '11111111-1111-1111-1111-111111111111',
-          name: 'Draft Museum',
-          slug: 'draft-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'draft',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Draft Museum', slug: 'draft-museum', status: 'draft' }));
 
         const res = await request(app).get('/api/v1/museums/draft-museum');
 
@@ -988,19 +1000,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns 404 for archived museum', async () => {
-        mockState.museums.push({
-          id: '11111111-1111-1111-1111-111111111111',
-          name: 'Archived Museum',
-          slug: 'archived-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'archived',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Archived Museum', slug: 'archived-museum', status: 'archived' }));
 
         const res = await request(app).get('/api/v1/museums/archived-museum');
 
@@ -1013,115 +1013,23 @@ describe('Phase 2 — Catalog Public Reads', () => {
         const archivedMuseumId = '22222222-2222-2222-2222-222222222222';
 
         mockState.museums.push(
-          {
-            id: draftMuseumId,
-            name: 'Draft Museum With Children',
-            slug: 'draft-with-children',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: archivedMuseumId,
-            name: 'Archived Museum With Children',
-            slug: 'archived-with-children',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeMuseum({ id: draftMuseumId, name: 'Draft Museum With Children', slug: 'draft-with-children', status: 'draft' }),
+          fakeMuseum({ id: archivedMuseumId, name: 'Archived Museum With Children', slug: 'archived-with-children', status: 'archived', createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         mockState.artifacts.push(
-          {
-            id: 'a1111111-1111-1111-1111-111111111111',
-            museumId: draftMuseumId,
-            name: 'Published Artifact Inside Draft Museum',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-DRAFT-001',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 'a2222222-2222-2222-2222-222222222222',
-            museumId: archivedMuseumId,
-            name: 'Published Artifact Inside Archived Museum',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-ARCHIVED-001',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeArtifact({ id: 'a1111111-1111-1111-1111-111111111111', museumId: draftMuseumId, name: 'Published Artifact Inside Draft Museum', inventoryCode: 'INV-DRAFT-001' }),
+          fakeArtifact({ id: 'a2222222-2222-2222-2222-222222222222', museumId: archivedMuseumId, name: 'Published Artifact Inside Archived Museum', inventoryCode: 'INV-ARCHIVED-001', createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         mockState.souvenirProducts.push(
-          {
-            id: 'p1111111-1111-1111-1111-111111111111',
-            museumId: draftMuseumId,
-            name: 'Published Product in Draft',
-            description: null,
-            sku: 'SKU-DRAFT-PUB',
-            price: '10000.00',
-            currency: 'VND',
-            stockQuantity: 5,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 'p2222222-2222-2222-2222-222222222222',
-            museumId: archivedMuseumId,
-            name: 'Published Product in Archived',
-            description: null,
-            sku: 'SKU-ARCHIVED-PUB',
-            price: '20000.00',
-            currency: 'VND',
-            stockQuantity: 10,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeProduct({ id: 'p1111111-1111-1111-1111-111111111111', museumId: draftMuseumId, name: 'Published Product in Draft', sku: 'SKU-DRAFT-PUB', price: '10000.00', stockQuantity: 5 }),
+          fakeProduct({ id: 'p2222222-2222-2222-2222-222222222222', museumId: archivedMuseumId, name: 'Published Product in Archived', sku: 'SKU-ARCHIVED-PUB', price: '20000.00', stockQuantity: 10, createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         mockState.ticketTypes.push(
-          {
-            id: 't1111111-1111-1111-1111-111111111111',
-            museumId: draftMuseumId,
-            name: 'Available Ticket in Draft',
-            description: null,
-            price: '50000.00',
-            currency: 'VND',
-            isAvailable: true,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 't2222222-2222-2222-2222-222222222222',
-            museumId: archivedMuseumId,
-            name: 'Available Ticket in Archived',
-            description: null,
-            price: '60000.00',
-            currency: 'VND',
-            isAvailable: true,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeTicketType({ id: 't1111111-1111-1111-1111-111111111111', museumId: draftMuseumId, name: 'Available Ticket in Draft', price: '50000.00' }),
+          fakeTicketType({ id: 't2222222-2222-2222-2222-222222222222', museumId: archivedMuseumId, name: 'Available Ticket in Archived', price: '60000.00', createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         const draftRes = await request(app).get('/api/v1/museums/draft-with-children');
@@ -1135,101 +1043,21 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns museum with embedded published children', async () => {
         const museumId = '11111111-1111-1111-1111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Louvre Museum',
-          slug: 'louvre',
-          description: 'World famous museum',
-          address: 'Rue de Rivoli',
-          city: 'Paris',
-          coverImagePath: '/images/louvre.jpg',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Louvre Museum', slug: 'louvre', description: 'World famous museum', address: 'Rue de Rivoli', city: 'Paris', coverImagePath: '/images/louvre.jpg' }));
 
         mockState.artifacts.push(
-          {
-            id: 'a1111111-1111-1111-1111-111111111111',
-            museumId,
-            name: 'Mona Lisa',
-            description: 'Portrait by Leonardo da Vinci',
-            period: 'Renaissance',
-            inventoryCode: 'INV-MONA',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 'a2222222-2222-2222-2222-222222222222',
-            museumId,
-            name: 'Draft Artifact',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-DRAFT',
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeArtifact({ id: 'a1111111-1111-1111-1111-111111111111', museumId, name: 'Mona Lisa', description: 'Portrait by Leonardo da Vinci', period: 'Renaissance', inventoryCode: 'INV-MONA' }),
+          fakeArtifact({ id: 'a2222222-2222-2222-2222-222222222222', museumId, name: 'Draft Artifact', inventoryCode: 'INV-DRAFT', status: 'draft' }),
         );
 
         mockState.souvenirProducts.push(
-          {
-            id: 'p1111111-1111-1111-1111-111111111111',
-            museumId,
-            name: 'Mona Lisa Postcard',
-            description: 'Glossy print',
-            sku: 'SKU-POSTCARD',
-            price: '50000.00',
-            currency: 'VND',
-            stockQuantity: 100,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 'p2222222-2222-2222-2222-222222222222',
-            museumId,
-            name: 'Draft Magnet',
-            description: null,
-            sku: 'SKU-DRAFT',
-            price: '30000.00',
-            currency: 'VND',
-            stockQuantity: 10,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeProduct({ id: 'p1111111-1111-1111-1111-111111111111', museumId, name: 'Mona Lisa Postcard', description: 'Glossy print', sku: 'SKU-POSTCARD', price: '50000.00', stockQuantity: 100 }),
+          fakeProduct({ id: 'p2222222-2222-2222-2222-222222222222', museumId, name: 'Draft Magnet', sku: 'SKU-DRAFT', price: '30000.00', stockQuantity: 10, status: 'draft' }),
         );
 
         mockState.ticketTypes.push(
-          {
-            id: 't1111111-1111-1111-1111-111111111111',
-            museumId,
-            name: 'Standard Ticket',
-            description: 'General admission',
-            price: '150000.00',
-            currency: 'VND',
-            isAvailable: true,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 't2222222-2222-2222-2222-222222222222',
-            museumId,
-            name: 'Unavailable VIP Ticket',
-            description: 'Temporarily paused',
-            price: '500000.00',
-            currency: 'VND',
-            isAvailable: false,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeTicketType({ id: 't1111111-1111-1111-1111-111111111111', museumId, name: 'Standard Ticket', description: 'General admission', price: '150000.00' }),
+          fakeTicketType({ id: 't2222222-2222-2222-2222-222222222222', museumId, name: 'Unavailable VIP Ticket', description: 'Temporarily paused', price: '500000.00', isAvailable: false }),
         );
 
         const res = await request(app).get('/api/v1/museums/louvre');
@@ -1257,19 +1085,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns empty arrays when published museum has no children', async () => {
-        mockState.museums.push({
-          id: '11111111-1111-1111-1111-111111111111',
-          name: 'Empty Museum',
-          slug: 'empty-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Empty Museum', slug: 'empty-museum' }));
 
         const res = await request(app).get('/api/v1/museums/empty-museum');
 
@@ -1287,19 +1103,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('is accessible publicly without an Authorization header', async () => {
-        mockState.museums.push({
-          id: '11111111-1111-1111-1111-111111111111',
-          name: 'Public Museum',
-          slug: 'public-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: '11111111-1111-1111-1111-111111111111', name: 'Public Museum', slug: 'public-museum' }));
 
         const res = await request(app).get('/api/v1/museums/public-museum');
         expect(res.status).toBe(200);
@@ -1325,31 +1129,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns 404 not_found when museum is draft', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Draft Museum',
-          slug: 'draft-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'draft',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: 'a1111111-1111-4111-8111-111111111111',
-          museumId,
-          name: 'Published Artifact in Draft Museum',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-001',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Draft Museum', slug: 'draft-museum', status: 'draft' }));
+        mockState.artifacts.push(fakeArtifact({ id: 'a1111111-1111-4111-8111-111111111111', museumId, name: 'Published Artifact in Draft Museum', inventoryCode: 'INV-001' }));
 
         const res = await request(app).get(`/api/v1/museums/${museumId}/artifacts`);
         expect(res.status).toBe(404);
@@ -1358,31 +1139,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns 404 not_found when museum is archived', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Archived Museum',
-          slug: 'archived-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'archived',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: 'a1111111-1111-4111-8111-111111111111',
-          museumId,
-          name: 'Published Artifact in Archived Museum',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-002',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Archived Museum', slug: 'archived-museum', status: 'archived' }));
+        mockState.artifacts.push(fakeArtifact({ id: 'a1111111-1111-4111-8111-111111111111', museumId, name: 'Published Artifact in Archived Museum', inventoryCode: 'INV-002' }));
 
         const res = await request(app).get(`/api/v1/museums/${museumId}/artifacts`);
         expect(res.status).toBe(404);
@@ -1391,19 +1149,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns 200 with empty list and pagination total=0 when published museum has no artifacts', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Empty Published Museum',
-          slug: 'empty-published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Empty Published Museum', slug: 'empty-published-museum' }));
 
         const res = await request(app).get(`/api/v1/museums/${museumId}/artifacts`);
         expect(res.status).toBe(200);
@@ -1421,83 +1167,15 @@ describe('Phase 2 — Catalog Public Reads', () => {
         const museum1 = '11111111-1111-4111-8111-111111111111';
         const museum2 = '22222222-2222-4222-8222-222222222222';
         mockState.museums.push(
-          {
-            id: museum1,
-            name: 'Museum 1',
-            slug: 'museum-1',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: museum2,
-            name: 'Museum 2',
-            slug: 'museum-2',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeMuseum({ id: museum1, name: 'Museum 1', slug: 'museum-1' }),
+          fakeMuseum({ id: museum2, name: 'Museum 2', slug: 'museum-2' }),
         );
 
         mockState.artifacts.push(
-          {
-            id: 'a1111111-1111-4111-8111-111111111111',
-            museumId: museum1,
-            name: 'Published Artifact M1',
-            description: 'Desc',
-            period: 'Bronze Age',
-            inventoryCode: 'INV-M1-PUB',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 'a2222222-2222-4222-8222-222222222222',
-            museumId: museum1,
-            name: 'Draft Artifact M1',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-M1-DRAFT',
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: 'a3333333-3333-4333-8333-333333333333',
-            museumId: museum1,
-            name: 'Archived Artifact M1',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-M1-ARCH',
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          },
-          {
-            id: 'a4444444-4444-4444-8444-444444444444',
-            museumId: museum2,
-            name: 'Published Artifact M2',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-M2-PUB',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-04T10:00:00Z'),
-            updatedAt: new Date('2026-01-04T10:00:00Z'),
-          }
+          fakeArtifact({ id: 'a1111111-1111-4111-8111-111111111111', museumId: museum1, name: 'Published Artifact M1', description: 'Desc', period: 'Bronze Age', inventoryCode: 'INV-M1-PUB' }),
+          fakeArtifact({ id: 'a2222222-2222-4222-8222-222222222222', museumId: museum1, name: 'Draft Artifact M1', inventoryCode: 'INV-M1-DRAFT', status: 'draft', createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeArtifact({ id: 'a3333333-3333-4333-8333-333333333333', museumId: museum1, name: 'Archived Artifact M1', inventoryCode: 'INV-M1-ARCH', status: 'archived', createdAt: new Date('2026-01-03T10:00:00Z') }),
+          fakeArtifact({ id: 'a4444444-4444-4444-8444-444444444444', museumId: museum2, name: 'Published Artifact M2', inventoryCode: 'INV-M2-PUB', createdAt: new Date('2026-01-04T10:00:00Z') }),
         );
 
         const res = await request(app).get(`/api/v1/museums/${museum1}/artifacts`);
@@ -1513,57 +1191,12 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('returns artifacts ordered by created_at DESC with pagination', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Museum',
-          slug: 'museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Museum', slug: 'museum' }));
 
         mockState.artifacts.push(
-          {
-            id: 'a1111111-1111-4111-8111-111111111111',
-            museumId,
-            name: 'Artifact Oldest',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-01',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: 'a2222222-2222-4222-8222-222222222222',
-            museumId,
-            name: 'Artifact Middle',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-02',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: 'a3333333-3333-4333-8333-333333333333',
-            museumId,
-            name: 'Artifact Newest',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-03',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          }
+          fakeArtifact({ id: 'a1111111-1111-4111-8111-111111111111', museumId, name: 'Artifact Oldest', inventoryCode: 'INV-01' }),
+          fakeArtifact({ id: 'a2222222-2222-4222-8222-222222222222', museumId, name: 'Artifact Middle', inventoryCode: 'INV-02', createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeArtifact({ id: 'a3333333-3333-4333-8333-333333333333', museumId, name: 'Artifact Newest', inventoryCode: 'INV-03', createdAt: new Date('2026-01-03T10:00:00Z') }),
         );
 
         const resPage1 = await request(app).get(
@@ -1603,19 +1236,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       it('is accessible publicly without an Authorization header', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Museum',
-          slug: 'museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Museum', slug: 'museum' }));
 
         const res = await request(app).get(`/api/v1/museums/${museumId}/artifacts`);
         expect(res.status).toBe(200);
@@ -1640,31 +1261,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
       it('returns 404 not_found when artifact is draft', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
         const artifactId = 'a1111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: artifactId,
-          museumId,
-          name: 'Draft Artifact',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-DRAFT',
-          status: 'draft',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Published Museum', slug: 'published-museum' }));
+        mockState.artifacts.push(fakeArtifact({ id: artifactId, museumId, name: 'Draft Artifact', inventoryCode: 'INV-DRAFT', status: 'draft' }));
 
         const res = await request(app).get(`/api/v1/artifacts/${artifactId}`);
         expect(res.status).toBe(404);
@@ -1674,31 +1272,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
       it('returns 404 not_found when artifact is archived', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
         const artifactId = 'a1111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: artifactId,
-          museumId,
-          name: 'Archived Artifact',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-ARCHIVED',
-          status: 'archived',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Published Museum', slug: 'published-museum' }));
+        mockState.artifacts.push(fakeArtifact({ id: artifactId, museumId, name: 'Archived Artifact', inventoryCode: 'INV-ARCHIVED', status: 'archived' }));
 
         const res = await request(app).get(`/api/v1/artifacts/${artifactId}`);
         expect(res.status).toBe(404);
@@ -1708,31 +1283,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
       it('returns 404 when parent museum is draft', async () => {
         const draftMuseumId = '11111111-1111-4111-8111-111111111111';
         const artifactId = 'a1111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: draftMuseumId,
-          name: 'Draft Museum',
-          slug: 'draft-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'draft',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: artifactId,
-          museumId: draftMuseumId,
-          name: 'Published Artifact in Draft Museum',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-PUB-IN-DRAFT',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: draftMuseumId, name: 'Draft Museum', slug: 'draft-museum', status: 'draft' }));
+        mockState.artifacts.push(fakeArtifact({ id: artifactId, museumId: draftMuseumId, name: 'Published Artifact in Draft Museum', inventoryCode: 'INV-PUB-IN-DRAFT' }));
 
         const res = await request(app).get(`/api/v1/artifacts/${artifactId}`);
         expect(res.status).toBe(404);
@@ -1742,31 +1294,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
       it('returns 404 when parent museum is archived', async () => {
         const archivedMuseumId = '11111111-1111-4111-8111-111111111111';
         const artifactId = 'a1111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: archivedMuseumId,
-          name: 'Archived Museum',
-          slug: 'archived-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'archived',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: artifactId,
-          museumId: archivedMuseumId,
-          name: 'Published Artifact in Archived Museum',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-PUB-IN-ARCHIVED',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: archivedMuseumId, name: 'Archived Museum', slug: 'archived-museum', status: 'archived' }));
+        mockState.artifacts.push(fakeArtifact({ id: artifactId, museumId: archivedMuseumId, name: 'Published Artifact in Archived Museum', inventoryCode: 'INV-PUB-IN-ARCHIVED' }));
 
         const res = await request(app).get(`/api/v1/artifacts/${artifactId}`);
         expect(res.status).toBe(404);
@@ -1776,31 +1305,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
       it('returns artifact when both artifact and museum are published', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
         const artifactId = 'a1111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: 'Museum description',
-          address: '123 Street',
-          city: 'Hanoi',
-          coverImagePath: '/covers/museum.jpg',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: artifactId,
-          museumId,
-          name: 'Dong Son Drum',
-          description: 'Ancient bronze drum',
-          period: 'Bronze Age',
-          inventoryCode: 'INV-DONG-SON',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Published Museum', slug: 'published-museum', description: 'Museum description', address: '123 Street', city: 'Hanoi', coverImagePath: '/covers/museum.jpg' }));
+        mockState.artifacts.push(fakeArtifact({ id: artifactId, museumId, name: 'Dong Son Drum', description: 'Ancient bronze drum', period: 'Bronze Age', inventoryCode: 'INV-DONG-SON' }));
 
         const res = await request(app).get(`/api/v1/artifacts/${artifactId}`);
         expect(res.status).toBe(200);
@@ -1821,31 +1327,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
       it('is accessible publicly without an Authorization header', async () => {
         const museumId = '11111111-1111-4111-8111-111111111111';
         const artifactId = 'a1111111-1111-4111-8111-111111111111';
-        mockState.museums.push({
-          id: museumId,
-          name: 'Museum',
-          slug: 'museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
-        mockState.artifacts.push({
-          id: artifactId,
-          museumId,
-          name: 'Artifact',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-01',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: museumId, name: 'Museum', slug: 'museum' }));
+        mockState.artifacts.push(fakeArtifact({ id: artifactId, museumId, name: 'Artifact', inventoryCode: 'INV-01' }));
 
         const res = await request(app).get(`/api/v1/artifacts/${artifactId}`);
         expect(res.status).toBe(200);
@@ -1944,48 +1427,14 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns 404 when artifact is draft or archived', async () => {
-        mockState.museums.push({
-          id: validMuseumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: validMuseumId, name: 'Published Museum', slug: 'published-museum' }));
 
         const draftArtifactId = 'a2222222-2222-4222-8222-222222222222';
         const archivedArtifactId = 'a3333333-3333-4333-8333-333333333333';
 
         mockState.artifacts.push(
-          {
-            id: draftArtifactId,
-            museumId: validMuseumId,
-            name: 'Draft Artifact',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-DRAFT',
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: archivedArtifactId,
-            museumId: validMuseumId,
-            name: 'Archived Artifact',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-ARCHIVED',
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeArtifact({ id: draftArtifactId, museumId: validMuseumId, name: 'Draft Artifact', inventoryCode: 'INV-DRAFT', status: 'draft' }),
+          fakeArtifact({ id: archivedArtifactId, museumId: validMuseumId, name: 'Archived Artifact', inventoryCode: 'INV-ARCHIVED', status: 'archived' }),
         );
 
         const res1 = await request(app).get(
@@ -2002,52 +1451,14 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns 404 when souvenir product is draft or archived', async () => {
-        mockState.museums.push({
-          id: validMuseumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: validMuseumId, name: 'Published Museum', slug: 'published-museum' }));
 
         const draftProductId = 'b2222222-2222-4222-8222-222222222222';
         const archivedProductId = 'b3333333-3333-4333-8333-333333333333';
 
         mockState.souvenirProducts.push(
-          {
-            id: draftProductId,
-            museumId: validMuseumId,
-            name: 'Draft Product',
-            description: null,
-            sku: 'SKU-DRAFT',
-            price: '10000.00',
-            currency: 'VND',
-            stockQuantity: 10,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: archivedProductId,
-            museumId: validMuseumId,
-            name: 'Archived Product',
-            description: null,
-            sku: 'SKU-ARCHIVED',
-            price: '20000.00',
-            currency: 'VND',
-            stockQuantity: 10,
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeProduct({ id: draftProductId, museumId: validMuseumId, name: 'Draft Product', sku: 'SKU-DRAFT', price: '10000.00', stockQuantity: 10, status: 'draft' }),
+          fakeProduct({ id: archivedProductId, museumId: validMuseumId, name: 'Archived Product', sku: 'SKU-ARCHIVED', price: '20000.00', stockQuantity: 10, status: 'archived' }),
         );
 
         const res1 = await request(app).get(
@@ -2068,62 +1479,16 @@ describe('Phase 2 — Catalog Public Reads', () => {
         const archivedMuseumId = '33333333-3333-4333-8333-333333333333';
 
         mockState.museums.push(
-          {
-            id: draftMuseumId,
-            name: 'Draft Museum',
-            slug: 'draft-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: archivedMuseumId,
-            name: 'Archived Museum',
-            slug: 'archived-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeMuseum({ id: draftMuseumId, name: 'Draft Museum', slug: 'draft-museum', status: 'draft' }),
+          fakeMuseum({ id: archivedMuseumId, name: 'Archived Museum', slug: 'archived-museum', status: 'archived' }),
         );
 
         const artifactInDraftId = 'a4444444-4444-4444-8444-444444444444';
         const artifactInArchivedId = 'a5555555-5555-4555-8555-555555555555';
 
         mockState.artifacts.push(
-          {
-            id: artifactInDraftId,
-            museumId: draftMuseumId,
-            name: 'Published Artifact In Draft Museum',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-04',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: artifactInArchivedId,
-            museumId: archivedMuseumId,
-            name: 'Published Artifact In Archived Museum',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-05',
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeArtifact({ id: artifactInDraftId, museumId: draftMuseumId, name: 'Published Artifact In Draft Museum', inventoryCode: 'INV-04' }),
+          fakeArtifact({ id: artifactInArchivedId, museumId: archivedMuseumId, name: 'Published Artifact In Archived Museum', inventoryCode: 'INV-05' }),
         );
 
         const res1 = await request(app).get(
@@ -2144,66 +1509,16 @@ describe('Phase 2 — Catalog Public Reads', () => {
         const archivedMuseumId = '33333333-3333-4333-8333-333333333333';
 
         mockState.museums.push(
-          {
-            id: draftMuseumId,
-            name: 'Draft Museum',
-            slug: 'draft-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: archivedMuseumId,
-            name: 'Archived Museum',
-            slug: 'archived-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeMuseum({ id: draftMuseumId, name: 'Draft Museum', slug: 'draft-museum', status: 'draft' }),
+          fakeMuseum({ id: archivedMuseumId, name: 'Archived Museum', slug: 'archived-museum', status: 'archived' }),
         );
 
         const productInDraftId = 'b4444444-4444-4444-8444-444444444444';
         const productInArchivedId = 'b5555555-5555-4555-8555-555555555555';
 
         mockState.souvenirProducts.push(
-          {
-            id: productInDraftId,
-            museumId: draftMuseumId,
-            name: 'Published Product In Draft Museum',
-            description: null,
-            sku: 'SKU-04',
-            price: '50000.00',
-            currency: 'VND',
-            stockQuantity: 10,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: productInArchivedId,
-            museumId: archivedMuseumId,
-            name: 'Published Product In Archived Museum',
-            description: null,
-            sku: 'SKU-05',
-            price: '60000.00',
-            currency: 'VND',
-            stockQuantity: 10,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          }
+          fakeProduct({ id: productInDraftId, museumId: draftMuseumId, name: 'Published Product In Draft Museum', sku: 'SKU-04', price: '50000.00', stockQuantity: 10 }),
+          fakeProduct({ id: productInArchivedId, museumId: archivedMuseumId, name: 'Published Product In Archived Museum', sku: 'SKU-05', price: '60000.00', stockQuantity: 10 }),
         );
 
         const res1 = await request(app).get(
@@ -2222,32 +1537,9 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
     describe('Listing, Ordering & Pagination (200 OK)', () => {
       it('returns empty array with pagination total=0 when published entity has no media', async () => {
-        mockState.museums.push({
-          id: validMuseumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: validMuseumId, name: 'Published Museum', slug: 'published-museum' }));
 
-        mockState.artifacts.push({
-          id: validArtifactId,
-          museumId: validMuseumId,
-          name: 'Artifact Without Media',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-NO-MEDIA',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.artifacts.push(fakeArtifact({ id: validArtifactId, museumId: validMuseumId, name: 'Artifact Without Media', inventoryCode: 'INV-NO-MEDIA' }));
 
         const res = await request(app).get(
           `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}`
@@ -2265,83 +1557,18 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns media ordered by sort_order ASC with deterministic secondary sort', async () => {
-        mockState.museums.push({
-          id: validMuseumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: validMuseumId, name: 'Published Museum', slug: 'published-museum' }));
 
-        mockState.artifacts.push({
-          id: validArtifactId,
-          museumId: validMuseumId,
-          name: 'Artifact With Media',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-MEDIA',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.artifacts.push(fakeArtifact({ id: validArtifactId, museumId: validMuseumId, name: 'Artifact With Media', inventoryCode: 'INV-MEDIA' }));
 
         const media1 = 'm1111111-1111-4111-8111-111111111111';
         const media2 = 'm2222222-2222-4222-8222-222222222222';
         const media3 = 'm3333333-3333-4333-8333-333333333333';
 
         mockState.mediaAssets.push(
-          {
-            id: media3,
-            museumId: validMuseumId,
-            entityType: 'artifact',
-            entityId: validArtifactId,
-            mediaType: 'image',
-            storageBucket: 'museum-media',
-            storagePath: 'path3.jpg',
-            mimeType: 'image/jpeg',
-            sortOrder: 20,
-            isPrimary: false,
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          },
-          {
-            id: media1,
-            museumId: validMuseumId,
-            entityType: 'artifact',
-            entityId: validArtifactId,
-            mediaType: 'image',
-            storageBucket: 'museum-media',
-            storagePath: 'path1.jpg',
-            mimeType: 'image/jpeg',
-            sortOrder: 1,
-            isPrimary: true,
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: media2,
-            museumId: validMuseumId,
-            entityType: 'artifact',
-            entityId: validArtifactId,
-            mediaType: 'video',
-            storageBucket: 'museum-media',
-            storagePath: 'path2.mp4',
-            mimeType: 'video/mp4',
-            sortOrder: 10,
-            isPrimary: false,
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeMedia({ id: media3, museumId: validMuseumId, entityType: 'artifact', entityId: validArtifactId, mediaType: 'image', storageBucket: 'museum-media', storagePath: 'path3.jpg', mimeType: 'image/jpeg', sortOrder: 20, isPrimary: false, createdAt: new Date('2026-01-03T10:00:00Z') }),
+          fakeMedia({ id: media1, museumId: validMuseumId, entityType: 'artifact', entityId: validArtifactId, mediaType: 'image', storageBucket: 'museum-media', storagePath: 'path1.jpg', mimeType: 'image/jpeg', sortOrder: 1, isPrimary: true }),
+          fakeMedia({ id: media2, museumId: validMuseumId, entityType: 'artifact', entityId: validArtifactId, mediaType: 'video', storageBucket: 'museum-media', storagePath: 'path2.mp4', mimeType: 'video/mp4', sortOrder: 10, isPrimary: false, createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         const res = await request(app).get(
@@ -2374,85 +1601,18 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('works for souvenir products and respects pagination parameters', async () => {
-        mockState.museums.push({
-          id: validMuseumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: validMuseumId, name: 'Published Museum', slug: 'published-museum' }));
 
-        mockState.souvenirProducts.push({
-          id: validProductId,
-          museumId: validMuseumId,
-          name: 'Mug',
-          description: null,
-          sku: 'MUG-01',
-          price: '80000.00',
-          currency: 'VND',
-          stockQuantity: 20,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.souvenirProducts.push(fakeProduct({ id: validProductId, museumId: validMuseumId, name: 'Mug', sku: 'MUG-01', price: '80000.00', stockQuantity: 20 }));
 
         const m1 = 'm1111111-1111-4111-8111-111111111111';
         const m2 = 'm2222222-2222-4222-8222-222222222222';
         const m3 = 'm3333333-3333-4333-8333-333333333333';
 
         mockState.mediaAssets.push(
-          {
-            id: m1,
-            museumId: validMuseumId,
-            entityType: 'souvenir',
-            entityId: validProductId,
-            mediaType: 'image',
-            storageBucket: 'souvenir-media',
-            storagePath: 'p1.jpg',
-            mimeType: 'image/jpeg',
-            sortOrder: 1,
-            isPrimary: true,
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: m2,
-            museumId: validMuseumId,
-            entityType: 'souvenir',
-            entityId: validProductId,
-            mediaType: 'image',
-            storageBucket: 'souvenir-media',
-            storagePath: 'p2.jpg',
-            mimeType: 'image/jpeg',
-            sortOrder: 2,
-            isPrimary: false,
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: m3,
-            museumId: validMuseumId,
-            entityType: 'souvenir',
-            entityId: validProductId,
-            mediaType: 'image',
-            storageBucket: 'souvenir-media',
-            storagePath: 'p3.jpg',
-            mimeType: 'image/jpeg',
-            sortOrder: 3,
-            isPrimary: false,
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          }
+          fakeMedia({ id: m1, museumId: validMuseumId, entityType: 'souvenir', entityId: validProductId, mediaType: 'image', storageBucket: 'souvenir-media', storagePath: 'p1.jpg', mimeType: 'image/jpeg', sortOrder: 1, isPrimary: true }),
+          fakeMedia({ id: m2, museumId: validMuseumId, entityType: 'souvenir', entityId: validProductId, mediaType: 'image', storageBucket: 'souvenir-media', storagePath: 'p2.jpg', mimeType: 'image/jpeg', sortOrder: 2, isPrimary: false, createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeMedia({ id: m3, museumId: validMuseumId, entityType: 'souvenir', entityId: validProductId, mediaType: 'image', storageBucket: 'souvenir-media', storagePath: 'p3.jpg', mimeType: 'image/jpeg', sortOrder: 3, isPrimary: false, createdAt: new Date('2026-01-03T10:00:00Z') }),
         );
 
         const res = await request(app).get(
@@ -2471,32 +1631,9 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('is accessible publicly without an Authorization header', async () => {
-        mockState.museums.push({
-          id: validMuseumId,
-          name: 'Published Museum',
-          slug: 'published-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: validMuseumId, name: 'Published Museum', slug: 'published-museum' }));
 
-        mockState.artifacts.push({
-          id: validArtifactId,
-          museumId: validMuseumId,
-          name: 'Artifact',
-          description: null,
-          period: null,
-          inventoryCode: 'INV-PUBLIC',
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.artifacts.push(fakeArtifact({ id: validArtifactId, museumId: validMuseumId, name: 'Artifact', inventoryCode: 'INV-PUBLIC' }));
 
         const res = await request(app).get(
           `/api/v1/media?entity_type=artifact&entity_id=${validArtifactId}`
@@ -2507,46 +1644,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
   });
 
   describe('Phase 2.4 — Admin Reads & Writes: Museums', () => {
-    const superAdminId = '00000000-0000-4000-8000-000000000001';
-    const adminUserId = '00000000-0000-4000-8000-000000000002';
-    const normalUserId = '00000000-0000-4000-8000-000000000003';
 
-    function authAsSuperAdmin(userId = superAdminId) {
-      mockGetUser.mockResolvedValueOnce({
-        data: { user: { id: userId, email: 'super@museum.vn' } },
-      });
-      mockState.userRoles.set(userId, new Set(['super_admin', 'normal_user']));
-      mockState.users.add(userId);
-      return userId;
-    }
-
-    function authAsAdminUser(
-      userId = adminUserId,
-      memberships: { museumId: string; status?: MembershipStatus }[] = []
-    ) {
-      mockGetUser.mockResolvedValueOnce({
-        data: { user: { id: userId, email: 'admin@museum.vn' } },
-      });
-      mockState.userRoles.set(userId, new Set(['admin_user', 'normal_user']));
-      mockState.users.add(userId);
-      for (const m of memberships) {
-        mockState.memberships.push({
-          userId,
-          museumId: m.museumId,
-          status: m.status ?? 'active',
-        });
-      }
-      return userId;
-    }
-
-    function authAsNormalUser(userId = normalUserId) {
-      mockGetUser.mockResolvedValueOnce({
-        data: { user: { id: userId, email: 'user@museum.vn' } },
-      });
-      mockState.userRoles.set(userId, new Set(['normal_user']));
-      mockState.users.add(userId);
-      return userId;
-    }
 
     describe('POST /api/v1/admin/museums', () => {
       it('returns 401 for anon and 403 for normal_user', async () => {
@@ -2609,19 +1707,7 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
 
       it('returns 409 on duplicate slug', async () => {
-        mockState.museums.push({
-          id: '11111111-1111-4111-8111-111111111111',
-          name: 'Existing Museum',
-          slug: 'existing-museum',
-          description: null,
-          address: null,
-          city: null,
-          coverImagePath: null,
-          status: 'published',
-          createdBy: null,
-          createdAt: new Date('2026-01-01T10:00:00Z'),
-          updatedAt: new Date('2026-01-01T10:00:00Z'),
-        });
+        mockState.museums.push(fakeMuseum({ id: '11111111-1111-4111-8111-111111111111', name: 'Existing Museum', slug: 'existing-museum' }));
 
         authAsSuperAdmin();
         const res = await request(app)
@@ -2687,45 +1773,9 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       beforeEach(() => {
         mockState.museums.push(
-          {
-            id: museum1,
-            name: 'Draft Museum 1',
-            slug: 'draft-1',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: null,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: museum2,
-            name: 'Published Museum 2',
-            slug: 'published-2',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: museum3,
-            name: 'Archived Museum 3',
-            slug: 'archived-3',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'archived',
-            createdBy: null,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          }
+          fakeMuseum({ id: museum1, name: 'Draft Museum 1', slug: 'draft-1', status: 'draft' }),
+          fakeMuseum({ id: museum2, name: 'Published Museum 2', slug: 'published-2', createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeMuseum({ id: museum3, name: 'Archived Museum 3', slug: 'archived-3', status: 'archived', createdAt: new Date('2026-01-03T10:00:00Z') }),
         );
       });
 
@@ -2843,32 +1893,8 @@ describe('Phase 2 — Catalog Public Reads', () => {
 
       beforeEach(() => {
         mockState.museums.push(
-          {
-            id: museumId,
-            name: 'Original Museum',
-            slug: 'original-museum',
-            description: 'Original desc',
-            address: '123 St',
-            city: 'Hue',
-            coverImagePath: '/covers/orig.jpg',
-            status: 'draft',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: otherMuseumId,
-            name: 'Other Museum',
-            slug: 'other-museum',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: null,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeMuseum({ id: museumId, name: 'Original Museum', slug: 'original-museum', description: 'Original desc', address: '123 St', city: 'Hue', coverImagePath: '/covers/orig.jpg', status: 'draft', createdBy: superAdminId }),
+          fakeMuseum({ id: otherMuseumId, name: 'Other Museum', slug: 'other-museum', createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
       });
 
@@ -3008,9 +2034,6 @@ describe('Phase 2 — Catalog Public Reads', () => {
   });
 
   describe('Phase 2.5 — Admin Reads & Writes: Artifacts', () => {
-    const superAdminId = '33333333-3333-4333-8333-333333333333';
-    const adminUserId = '44444444-4444-4444-8444-444444444444';
-    const normalUserId = '55555555-5555-4555-8555-555555555555';
     const museumId = '11111111-1111-4111-8111-111111111111';
     const otherMuseumId = '22222222-2222-4222-8222-222222222222';
     const artifactId1 = 'a1111111-1111-4111-8111-111111111111';
@@ -3018,135 +2041,18 @@ describe('Phase 2 — Catalog Public Reads', () => {
     const artifactId3 = 'a3333333-3333-4333-8333-333333333333';
     const otherArtifactId = 'a4444444-4444-4444-8444-444444444444';
 
-    beforeEach(() => {
-      mockState.users.clear();
-      mockState.userRoles.clear();
-      mockState.memberships = [];
-      mockState.museums = [];
-      mockState.artifacts = [];
-      mockState.souvenirProducts = [];
-      mockState.ticketTypes = [];
-      mockState.mediaAssets = [];
-      mockGetUser.mockReset();
-    });
-
-    function authAsSuperAdmin(userId = superAdminId) {
-      mockGetUser.mockResolvedValueOnce({
-        data: { user: { id: userId, email: 'super@museum.vn' } },
-      });
-      mockState.userRoles.set(userId, new Set(['super_admin', 'normal_user']));
-      mockState.users.add(userId);
-      return userId;
-    }
-
-    function authAsAdminUser(
-      userId = adminUserId,
-      memberships: { museumId: string; status?: MembershipStatus }[] = []
-    ) {
-      mockGetUser.mockResolvedValueOnce({
-        data: { user: { id: userId, email: 'admin@museum.vn' } },
-      });
-      mockState.userRoles.set(userId, new Set(['admin_user', 'normal_user']));
-      mockState.users.add(userId);
-      for (const m of memberships) {
-        mockState.memberships.push({
-          userId,
-          museumId: m.museumId,
-          status: m.status ?? 'active',
-        });
-      }
-      return userId;
-    }
-
-    function authAsNormalUser(userId = normalUserId) {
-      mockGetUser.mockResolvedValueOnce({
-        data: { user: { id: userId, email: 'user@museum.vn' } },
-      });
-      mockState.userRoles.set(userId, new Set(['normal_user']));
-      mockState.users.add(userId);
-      return userId;
-    }
-
     describe('GET /api/v1/admin/museums/:museumId/artifacts', () => {
       beforeEach(() => {
         mockState.museums.push(
-          {
-            id: museumId,
-            name: 'Museum A',
-            slug: 'museum-a',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: otherMuseumId,
-            name: 'Museum B',
-            slug: 'museum-b',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeMuseum({ id: museumId, name: 'Museum A', slug: 'museum-a', status: 'draft', createdBy: superAdminId }),
+          fakeMuseum({ id: otherMuseumId, name: 'Museum B', slug: 'museum-b', createdBy: superAdminId, createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         mockState.artifacts.push(
-          {
-            id: artifactId1,
-            museumId,
-            name: 'Bronze Drum',
-            description: 'Ancient bronze drum',
-            period: 'Dong Son',
-            inventoryCode: 'ART-001',
-            status: 'draft',
-            createdBy: adminUserId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: artifactId2,
-            museumId,
-            name: 'Ceramic Vase',
-            description: 'Glazed vase',
-            period: 'Ly Dynasty',
-            inventoryCode: 'ART-002',
-            status: 'published',
-            createdBy: adminUserId,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: artifactId3,
-            museumId,
-            name: 'Ancient Sword',
-            description: 'Iron sword',
-            period: 'Tran Dynasty',
-            inventoryCode: 'ART-003',
-            status: 'archived',
-            createdBy: adminUserId,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          },
-          {
-            id: otherArtifactId,
-            museumId: otherMuseumId,
-            name: 'Other Artifact',
-            description: 'Different museum artifact',
-            period: null,
-            inventoryCode: 'ART-999',
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-04T10:00:00Z'),
-            updatedAt: new Date('2026-01-04T10:00:00Z'),
-          }
+          fakeArtifact({ id: artifactId1, museumId, name: 'Bronze Drum', description: 'Ancient bronze drum', period: 'Dong Son', inventoryCode: 'ART-001', status: 'draft', createdBy: adminUserId }),
+          fakeArtifact({ id: artifactId2, museumId, name: 'Ceramic Vase', description: 'Glazed vase', period: 'Ly Dynasty', inventoryCode: 'ART-002', createdBy: adminUserId, createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeArtifact({ id: artifactId3, museumId, name: 'Ancient Sword', description: 'Iron sword', period: 'Tran Dynasty', inventoryCode: 'ART-003', status: 'archived', createdBy: adminUserId, createdAt: new Date('2026-01-03T10:00:00Z') }),
+          fakeArtifact({ id: otherArtifactId, museumId: otherMuseumId, name: 'Other Artifact', description: 'Different museum artifact', inventoryCode: 'ART-999', createdBy: superAdminId, createdAt: new Date('2026-01-04T10:00:00Z') }),
         );
       });
 
@@ -3267,59 +2173,13 @@ describe('Phase 2 — Catalog Public Reads', () => {
     describe('POST /api/v1/admin/museums/:museumId/artifacts', () => {
       beforeEach(() => {
         mockState.museums.push(
-          {
-            id: museumId,
-            name: 'Museum A',
-            slug: 'museum-a',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: otherMuseumId,
-            name: 'Museum B',
-            slug: 'museum-b',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeMuseum({ id: museumId, name: 'Museum A', slug: 'museum-a', status: 'draft', createdBy: superAdminId }),
+          fakeMuseum({ id: otherMuseumId, name: 'Museum B', slug: 'museum-b', createdBy: superAdminId, createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         mockState.artifacts.push(
-          {
-            id: artifactId1,
-            museumId,
-            name: 'Existing Artifact A',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-100',
-            status: 'draft',
-            createdBy: adminUserId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: otherArtifactId,
-            museumId: otherMuseumId,
-            name: 'Existing Artifact B',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-200',
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeArtifact({ id: artifactId1, museumId, name: 'Existing Artifact A', inventoryCode: 'INV-100', status: 'draft', createdBy: adminUserId }),
+          fakeArtifact({ id: otherArtifactId, museumId: otherMuseumId, name: 'Existing Artifact B', inventoryCode: 'INV-200', createdBy: superAdminId, createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
       });
 
@@ -3487,71 +2347,14 @@ describe('Phase 2 — Catalog Public Reads', () => {
     describe('PATCH /api/v1/admin/artifacts/:id', () => {
       beforeEach(() => {
         mockState.museums.push(
-          {
-            id: museumId,
-            name: 'Museum A',
-            slug: 'museum-a',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'draft',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: otherMuseumId,
-            name: 'Museum B',
-            slug: 'museum-b',
-            description: null,
-            address: null,
-            city: null,
-            coverImagePath: null,
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          }
+          fakeMuseum({ id: museumId, name: 'Museum A', slug: 'museum-a', status: 'draft', createdBy: superAdminId }),
+          fakeMuseum({ id: otherMuseumId, name: 'Museum B', slug: 'museum-b', createdBy: superAdminId, createdAt: new Date('2026-01-02T10:00:00Z') }),
         );
 
         mockState.artifacts.push(
-          {
-            id: artifactId1,
-            museumId,
-            name: 'Original Artifact 1',
-            description: 'Original description',
-            period: 'Period 1',
-            inventoryCode: 'INV-A1',
-            status: 'draft',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-01T10:00:00Z'),
-            updatedAt: new Date('2026-01-01T10:00:00Z'),
-          },
-          {
-            id: artifactId2,
-            museumId,
-            name: 'Original Artifact 2',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-A2',
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-02T10:00:00Z'),
-            updatedAt: new Date('2026-01-02T10:00:00Z'),
-          },
-          {
-            id: otherArtifactId,
-            museumId: otherMuseumId,
-            name: 'Other Museum Artifact',
-            description: null,
-            period: null,
-            inventoryCode: 'INV-B1',
-            status: 'published',
-            createdBy: superAdminId,
-            createdAt: new Date('2026-01-03T10:00:00Z'),
-            updatedAt: new Date('2026-01-03T10:00:00Z'),
-          }
+          fakeArtifact({ id: artifactId1, museumId, name: 'Original Artifact 1', description: 'Original description', period: 'Period 1', inventoryCode: 'INV-A1', status: 'draft', createdBy: superAdminId }),
+          fakeArtifact({ id: artifactId2, museumId, name: 'Original Artifact 2', inventoryCode: 'INV-A2', createdBy: superAdminId, createdAt: new Date('2026-01-02T10:00:00Z') }),
+          fakeArtifact({ id: otherArtifactId, museumId: otherMuseumId, name: 'Other Museum Artifact', inventoryCode: 'INV-B1', createdBy: superAdminId, createdAt: new Date('2026-01-03T10:00:00Z') }),
         );
       });
 
