@@ -3691,6 +3691,26 @@ describe('Phase 2 — Catalog Public Reads', () => {
         });
       });
 
+      it('allows clearing nullable fields (description, period, inventory_code) by setting them to null', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            description: null,
+            period: null,
+            inventory_code: null,
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.description).toBeNull();
+        expect(res.body.data.period).toBeNull();
+        expect(res.body.data.inventory_code).toBeNull();
+      });
+
       it('archives artifact via status: archived', async () => {
         authAsAdminUser(adminUserId, [
           { museumId, status: 'active' },
