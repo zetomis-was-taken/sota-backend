@@ -55,6 +55,11 @@ interface TicketTypeRecord {
   updatedAt: Date;
 }
 
+interface OrderByClause {
+  column: string;
+  direction: 'asc' | 'desc';
+}
+
 const { mockState, mockDb } = vi.hoisted(() => {
   const mockState = {
     museums: [] as MuseumRecord[],
@@ -98,13 +103,54 @@ const { mockState, mockDb } = vi.hoisted(() => {
     return out;
   }
 
+  function extractOrderBy(clauses: unknown[]): OrderByClause[] {
+    const result: OrderByClause[] = [];
+    for (const clause of clauses) {
+      if (!clause || typeof clause !== 'object') continue;
+      const chunks = (clause as { queryChunks?: unknown[] }).queryChunks;
+      if (!Array.isArray(chunks)) continue;
+
+      let colName: string | null = null;
+      let direction: 'asc' | 'desc' = 'asc';
+
+      for (const chunk of chunks) {
+        if (chunk && typeof chunk === 'object') {
+          const c = chunk as { name?: string; value?: unknown };
+          if (typeof c.name === 'string') {
+            colName = c.name;
+          } else if (
+            Array.isArray(c.value) &&
+            c.value.some((v) => typeof v === 'string' && v.includes('desc'))
+          ) {
+            direction = 'desc';
+          } else if (
+            Array.isArray(c.value) &&
+            c.value.some((v) => typeof v === 'string' && v.includes('asc'))
+          ) {
+            direction = 'asc';
+          }
+        }
+      }
+
+      if (colName) {
+        result.push({ column: colName, direction });
+      }
+    }
+    return result;
+  }
+
   const mockDb = {
     select: vi.fn((fields: Record<string, unknown>) => {
       let activeTable = '';
 
       const createQueryPromise = (
         getRows: () => any[],
-        options = { limit: Infinity, offset: 0, filters: {} as Record<string, unknown> }
+        options = {
+          limit: Infinity,
+          offset: 0,
+          filters: {} as Record<string, unknown>,
+          orderBy: [] as OrderByClause[],
+        }
       ) => {
         const execute = () => {
           let rows = getRows();
@@ -142,6 +188,26 @@ const { mockState, mockDb } = vi.hoisted(() => {
             }
           }
 
+          if (options.orderBy.length > 0) {
+            rows.sort((a, b) => {
+              for (const clause of options.orderBy) {
+                const aVal = a[clause.column];
+                const bVal = b[clause.column];
+                if (aVal === bVal) continue;
+                if (aVal instanceof Date && bVal instanceof Date) {
+                  const diff = aVal.getTime() - bVal.getTime();
+                  if (diff !== 0) {
+                    return clause.direction === 'desc' ? -diff : diff;
+                  }
+                  continue;
+                }
+                if (aVal < bVal) return clause.direction === 'desc' ? 1 : -1;
+                if (aVal > bVal) return clause.direction === 'desc' ? -1 : 1;
+              }
+              return 0;
+            });
+          }
+
           if ('total' in fields) {
             return [{ total: rows.length }];
           }
@@ -152,7 +218,10 @@ const { mockState, mockDb } = vi.hoisted(() => {
         const promise = Promise.resolve().then(execute);
 
         return Object.assign(promise, {
-          orderBy: vi.fn(() => createQueryPromise(getRows, options)),
+          orderBy: vi.fn((...orderClauses: unknown[]) => {
+            const orderBy = extractOrderBy(orderClauses);
+            return createQueryPromise(getRows, { ...options, orderBy });
+          }),
           where: vi.fn((condition: unknown) => {
             const filters = extractEqFilters(condition);
             return createQueryPromise(getRows, { ...options, filters });
@@ -338,11 +407,65 @@ describe('Phase 2.1 — Public Reads: Museums', () => {
       expect(res.body.data[0].cover_image_path).toBe('/covers/a.jpg');
     });
 
-    it('respects limit and offset pagination parameters', async () => {
+    it('returns published museums ordered by created_at DESC (newest first)', async () => {
       mockState.museums.push(
         {
           id: '11111111-1111-1111-1111-111111111111',
-          name: 'Museum 1',
+          name: 'Oldest Museum',
+          slug: 'oldest-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        },
+        {
+          id: '22222222-2222-2222-2222-222222222222',
+          name: 'Middle Museum',
+          slug: 'middle-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-15T10:00:00Z'),
+          updatedAt: new Date('2026-01-15T10:00:00Z'),
+        },
+        {
+          id: '33333333-3333-3333-3333-333333333333',
+          name: 'Newest Museum',
+          slug: 'newest-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-02-01T10:00:00Z'),
+          updatedAt: new Date('2026-02-01T10:00:00Z'),
+        }
+      );
+
+      const res = await request(app).get('/api/v1/museums');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(3);
+      expect(res.body.data.map((m: any) => m.slug)).toEqual([
+        'newest-museum',
+        'middle-museum',
+        'oldest-museum',
+      ]);
+    });
+
+    it('respects limit and offset pagination parameters with created_at DESC order', async () => {
+      mockState.museums.push(
+        {
+          id: '11111111-1111-1111-1111-111111111111',
+          name: 'Museum 1 (Oldest)',
           slug: 'museum-1',
           description: null,
           address: null,
@@ -355,7 +478,7 @@ describe('Phase 2.1 — Public Reads: Museums', () => {
         },
         {
           id: '22222222-2222-2222-2222-222222222222',
-          name: 'Museum 2',
+          name: 'Museum 2 (Middle)',
           slug: 'museum-2',
           description: null,
           address: null,
@@ -368,7 +491,7 @@ describe('Phase 2.1 — Public Reads: Museums', () => {
         },
         {
           id: '33333333-3333-3333-3333-333333333333',
-          name: 'Museum 3',
+          name: 'Museum 3 (Newest)',
           slug: 'museum-3',
           description: null,
           address: null,
@@ -381,16 +504,40 @@ describe('Phase 2.1 — Public Reads: Museums', () => {
         }
       );
 
-      const res = await request(app).get('/api/v1/museums?limit=1&offset=1');
+      // When sorted by created_at DESC:
+      // index 0 -> museum-3 (newest)
+      // index 1 -> museum-2 (middle)
+      // index 2 -> museum-1 (oldest)
 
-      expect(res.status).toBe(200);
-      expect(res.body.pagination).toEqual({
+      const resPage1 = await request(app).get('/api/v1/museums?limit=1&offset=0');
+      expect(resPage1.status).toBe(200);
+      expect(resPage1.body.pagination).toEqual({
+        limit: 1,
+        offset: 0,
+        total: 3,
+      });
+      expect(resPage1.body.data).toHaveLength(1);
+      expect(resPage1.body.data[0].slug).toBe('museum-3');
+
+      const resPage2 = await request(app).get('/api/v1/museums?limit=1&offset=1');
+      expect(resPage2.status).toBe(200);
+      expect(resPage2.body.pagination).toEqual({
         limit: 1,
         offset: 1,
         total: 3,
       });
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.data[0].slug).toBe('museum-2');
+      expect(resPage2.body.data).toHaveLength(1);
+      expect(resPage2.body.data[0].slug).toBe('museum-2');
+
+      const resPage3 = await request(app).get('/api/v1/museums?limit=1&offset=2');
+      expect(resPage3.status).toBe(200);
+      expect(resPage3.body.pagination).toEqual({
+        limit: 1,
+        offset: 2,
+        total: 3,
+      });
+      expect(resPage3.body.data).toHaveLength(1);
+      expect(resPage3.body.data[0].slug).toBe('museum-1');
     });
 
     it('returns 400 validation_error on invalid pagination query', async () => {
@@ -465,37 +612,127 @@ describe('Phase 2.1 — Public Reads: Museums', () => {
 
     it('does not expose published children when the parent museum is draft or archived', async () => {
       const draftMuseumId = '11111111-1111-1111-1111-111111111111';
-      mockState.museums.push({
-        id: draftMuseumId,
-        name: 'Draft Museum With Children',
-        slug: 'draft-with-children',
-        description: null,
-        address: null,
-        city: null,
-        coverImagePath: null,
-        status: 'draft',
-        createdBy: null,
-        createdAt: new Date('2026-01-01T10:00:00Z'),
-        updatedAt: new Date('2026-01-01T10:00:00Z'),
-      });
+      const archivedMuseumId = '22222222-2222-2222-2222-222222222222';
 
-      mockState.artifacts.push({
-        id: 'a1111111-1111-1111-1111-111111111111',
-        museumId: draftMuseumId,
-        name: 'Published Artifact Inside Draft Museum',
-        description: null,
-        period: null,
-        inventoryCode: 'INV-001',
-        status: 'published',
-        createdBy: null,
-        createdAt: new Date('2026-01-01T10:00:00Z'),
-        updatedAt: new Date('2026-01-01T10:00:00Z'),
-      });
+      mockState.museums.push(
+        {
+          id: draftMuseumId,
+          name: 'Draft Museum With Children',
+          slug: 'draft-with-children',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'draft',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        },
+        {
+          id: archivedMuseumId,
+          name: 'Archived Museum With Children',
+          slug: 'archived-with-children',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'archived',
+          createdBy: null,
+          createdAt: new Date('2026-01-02T10:00:00Z'),
+          updatedAt: new Date('2026-01-02T10:00:00Z'),
+        }
+      );
 
-      const res = await request(app).get('/api/v1/museums/draft-with-children');
+      mockState.artifacts.push(
+        {
+          id: 'a1111111-1111-1111-1111-111111111111',
+          museumId: draftMuseumId,
+          name: 'Published Artifact Inside Draft Museum',
+          description: null,
+          period: null,
+          inventoryCode: 'INV-DRAFT-001',
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        },
+        {
+          id: 'a2222222-2222-2222-2222-222222222222',
+          museumId: archivedMuseumId,
+          name: 'Published Artifact Inside Archived Museum',
+          description: null,
+          period: null,
+          inventoryCode: 'INV-ARCHIVED-001',
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-02T10:00:00Z'),
+          updatedAt: new Date('2026-01-02T10:00:00Z'),
+        }
+      );
 
-      expect(res.status).toBe(404);
-      expect(res.body.error.code).toBe('not_found');
+      mockState.souvenirProducts.push(
+        {
+          id: 'p1111111-1111-1111-1111-111111111111',
+          museumId: draftMuseumId,
+          name: 'Published Product in Draft',
+          description: null,
+          sku: 'SKU-DRAFT-PUB',
+          price: '10000.00',
+          currency: 'VND',
+          stockQuantity: 5,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        },
+        {
+          id: 'p2222222-2222-2222-2222-222222222222',
+          museumId: archivedMuseumId,
+          name: 'Published Product in Archived',
+          description: null,
+          sku: 'SKU-ARCHIVED-PUB',
+          price: '20000.00',
+          currency: 'VND',
+          stockQuantity: 10,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-02T10:00:00Z'),
+          updatedAt: new Date('2026-01-02T10:00:00Z'),
+        }
+      );
+
+      mockState.ticketTypes.push(
+        {
+          id: 't1111111-1111-1111-1111-111111111111',
+          museumId: draftMuseumId,
+          name: 'Available Ticket in Draft',
+          description: null,
+          price: '50000.00',
+          currency: 'VND',
+          isAvailable: true,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        },
+        {
+          id: 't2222222-2222-2222-2222-222222222222',
+          museumId: archivedMuseumId,
+          name: 'Available Ticket in Archived',
+          description: null,
+          price: '60000.00',
+          currency: 'VND',
+          isAvailable: true,
+          createdAt: new Date('2026-01-02T10:00:00Z'),
+          updatedAt: new Date('2026-01-02T10:00:00Z'),
+        }
+      );
+
+      const draftRes = await request(app).get('/api/v1/museums/draft-with-children');
+      expect(draftRes.status).toBe(404);
+      expect(draftRes.body.error.code).toBe('not_found');
+
+      const archivedRes = await request(app).get('/api/v1/museums/archived-with-children');
+      expect(archivedRes.status).toBe(404);
+      expect(archivedRes.body.error.code).toBe('not_found');
     });
 
     it('returns museum with embedded published children', async () => {
