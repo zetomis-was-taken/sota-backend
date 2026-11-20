@@ -217,87 +217,189 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
         })),
       });
     }),
-    insert: vi.fn((_table: any) => ({
-      values: vi.fn((val: any) => {
-        const now = new Date();
-        const newMuseum: MuseumRecord = {
-          id:
-            val.id ??
-            '11111111-1111-4111-8111-999999999999',
-          name: val.name,
-          slug: val.slug,
-          description: val.description ?? null,
-          address: val.address ?? null,
-          city: val.city ?? null,
-          coverImagePath: val.coverImagePath ?? null,
-          status: val.status ?? 'draft',
-          createdBy: val.createdBy ?? null,
-          createdAt: now,
-          updatedAt: now,
-        };
-        mockState.museums.push(newMuseum);
-        return {
-          returning: vi.fn(async () => [
-            {
-              id: newMuseum.id,
-              name: newMuseum.name,
-              slug: newMuseum.slug,
-              description: newMuseum.description,
-              address: newMuseum.address,
-              city: newMuseum.city,
-              cover_image_path: newMuseum.coverImagePath,
-              status: newMuseum.status,
-              created_by: newMuseum.createdBy,
-              created_at: newMuseum.createdAt,
-              updated_at: newMuseum.updatedAt,
-            },
-          ]),
-        };
-      }),
-    })),
-    update: vi.fn((_table: any) => ({
-      set: vi.fn((values: Record<string, unknown>) => ({
-        where: vi.fn((condition: unknown) => {
-          const filters = extractFilters(condition);
-          const museumId = String(filters.eq.id ?? '');
-          const m = mockState.museums.find((item) => item.id === museumId);
-          return {
-            returning: vi.fn(async () => {
-              if (!m) return [];
-              if (values.name !== undefined) m.name = values.name as string;
-              if (values.slug !== undefined) m.slug = values.slug as string;
-              if (values.description !== undefined)
-                m.description = values.description as string | null;
-              if (values.address !== undefined)
-                m.address = values.address as string | null;
-              if (values.city !== undefined)
-                m.city = values.city as string | null;
-              if (values.coverImagePath !== undefined)
-                m.coverImagePath = values.coverImagePath as string | null;
-              if (values.status !== undefined)
-                m.status = values.status as any;
-              if (values.updatedAt instanceof Date)
-                m.updatedAt = values.updatedAt;
-              return [
+    insert: vi.fn((table: any) => {
+      let tableName = 'museums';
+      try {
+        if (typeof table === 'object' && table !== null) {
+          const drizzleName = (table as any)[Symbol.for('drizzle:Name')];
+          if (typeof drizzleName === 'string') {
+            tableName = drizzleName;
+          } else {
+            tableName = getTableName(table);
+          }
+        }
+      } catch {
+        tableName = 'museums';
+      }
+
+      return {
+        values: vi.fn((val: any) => {
+          const now = new Date();
+          if (tableName === 'artifacts') {
+            const newArtifact: ArtifactRecord = {
+              id:
+                val.id ??
+                `a1111111-1111-4111-8111-${Math.floor(
+                  100000000000 + Math.random() * 900000000000
+                )}`,
+              museumId: val.museumId,
+              name: val.name,
+              description: val.description ?? null,
+              period: val.period ?? null,
+              inventoryCode: val.inventoryCode ?? null,
+              status: val.status ?? 'draft',
+              createdBy: val.createdBy ?? null,
+              createdAt: now,
+              updatedAt: now,
+            };
+            mockState.artifacts.push(newArtifact);
+            return {
+              returning: vi.fn(async () => [
                 {
-                  id: m.id,
-                  name: m.name,
-                  slug: m.slug,
-                  description: m.description,
-                  address: m.address,
-                  city: m.city,
-                  cover_image_path: m.coverImagePath,
-                  status: m.status,
-                  created_by: m.createdBy,
-                  created_at: m.createdAt,
-                  updated_at: m.updatedAt,
+                  id: newArtifact.id,
+                  museum_id: newArtifact.museumId,
+                  name: newArtifact.name,
+                  description: newArtifact.description,
+                  period: newArtifact.period,
+                  inventory_code: newArtifact.inventoryCode,
+                  status: newArtifact.status,
+                  created_by: newArtifact.createdBy,
+                  created_at: newArtifact.createdAt,
+                  updated_at: newArtifact.updatedAt,
                 },
-              ];
-            }),
+              ]),
+            };
+          }
+
+          const newMuseum: MuseumRecord = {
+            id:
+              val.id ??
+              '11111111-1111-4111-8111-999999999999',
+            name: val.name,
+            slug: val.slug,
+            description: val.description ?? null,
+            address: val.address ?? null,
+            city: val.city ?? null,
+            coverImagePath: val.coverImagePath ?? null,
+            status: val.status ?? 'draft',
+            createdBy: val.createdBy ?? null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          mockState.museums.push(newMuseum);
+          return {
+            returning: vi.fn(async () => [
+              {
+                id: newMuseum.id,
+                name: newMuseum.name,
+                slug: newMuseum.slug,
+                description: newMuseum.description,
+                address: newMuseum.address,
+                city: newMuseum.city,
+                cover_image_path: newMuseum.coverImagePath,
+                status: newMuseum.status,
+                created_by: newMuseum.createdBy,
+                created_at: newMuseum.createdAt,
+                updated_at: newMuseum.updatedAt,
+              },
+            ]),
           };
         }),
-      })),
-    })),
+      };
+    }),
+    update: vi.fn((table: any) => {
+      let tableName = 'museums';
+      try {
+        if (typeof table === 'object' && table !== null) {
+          const drizzleName = (table as any)[Symbol.for('drizzle:Name')];
+          if (typeof drizzleName === 'string') {
+            tableName = drizzleName;
+          } else {
+            tableName = getTableName(table);
+          }
+        }
+      } catch {
+        tableName = 'museums';
+      }
+
+      return {
+        set: vi.fn((values: Record<string, unknown>) => ({
+          where: vi.fn((condition: unknown) => {
+            const filters = extractFilters(condition);
+            const targetId = String(filters.eq.id ?? '');
+
+            if (tableName === 'artifacts') {
+              const a = mockState.artifacts.find((item) => item.id === targetId);
+              return {
+                returning: vi.fn(async () => {
+                  if (!a) return [];
+                  if (values.name !== undefined) a.name = values.name as string;
+                  if (values.description !== undefined)
+                    a.description = values.description as string | null;
+                  if (values.period !== undefined)
+                    a.period = values.period as string | null;
+                  if (values.inventoryCode !== undefined)
+                    a.inventoryCode = values.inventoryCode as string | null;
+                  if (values.status !== undefined) a.status = values.status as any;
+                  if (values.updatedAt instanceof Date)
+                    a.updatedAt = values.updatedAt;
+                  return [
+                    {
+                      id: a.id,
+                      museum_id: a.museumId,
+                      name: a.name,
+                      description: a.description,
+                      period: a.period,
+                      inventory_code: a.inventoryCode,
+                      status: a.status,
+                      created_by: a.createdBy,
+                      created_at: a.createdAt,
+                      updated_at: a.updatedAt,
+                    },
+                  ];
+                }),
+              };
+            }
+
+            const m = mockState.museums.find((item) => item.id === targetId);
+            return {
+              returning: vi.fn(async () => {
+                if (!m) return [];
+                if (values.name !== undefined) m.name = values.name as string;
+                if (values.slug !== undefined) m.slug = values.slug as string;
+                if (values.description !== undefined)
+                  m.description = values.description as string | null;
+                if (values.address !== undefined)
+                  m.address = values.address as string | null;
+                if (values.city !== undefined)
+                  m.city = values.city as string | null;
+                if (values.coverImagePath !== undefined)
+                  m.coverImagePath = values.coverImagePath as string | null;
+                if (values.status !== undefined)
+                  m.status = values.status as any;
+                if (values.updatedAt instanceof Date)
+                  m.updatedAt = values.updatedAt;
+                return [
+                  {
+                    id: m.id,
+                    name: m.name,
+                    slug: m.slug,
+                    description: m.description,
+                    address: m.address,
+                    city: m.city,
+                    cover_image_path: m.coverImagePath,
+                    status: m.status,
+                    created_by: m.createdBy,
+                    created_at: m.createdAt,
+                    updated_at: m.updatedAt,
+                  },
+                ];
+              }),
+            };
+          }),
+        })),
+      };
+    }),
     select: vi.fn((fields: Record<string, unknown>) => {
       let activeTable = '';
 
@@ -365,10 +467,10 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
               rows = rows.filter((u) => u.id === options.filters.eq.id);
             }
           } else if (activeTable === 'artifacts') {
-            if (options.filters.eq.museum_id) {
-              rows = rows.filter(
-                (a) => a.museum_id === options.filters.eq.museum_id
-              );
+            const targetMuseumId =
+              options.filters.eq.museum_id ?? options.filters.eq.museumId;
+            if (targetMuseumId) {
+              rows = rows.filter((a) => a.museum_id === targetMuseumId);
             }
             if (options.filters.eq.status) {
               rows = rows.filter(
@@ -377,6 +479,15 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
             }
             if (options.filters.eq.id) {
               rows = rows.filter((a) => a.id === options.filters.eq.id);
+            }
+            if (options.filters.ne.id) {
+              rows = rows.filter((a) => a.id !== options.filters.ne.id);
+            }
+            const targetInvCode =
+              options.filters.eq.inventory_code ??
+              options.filters.eq.inventoryCode;
+            if (targetInvCode !== undefined) {
+              rows = rows.filter((a) => a.inventory_code === targetInvCode);
             }
           } else if (activeTable === 'souvenir_products') {
             if (options.filters.eq.museum_id) {
@@ -2892,6 +3003,718 @@ describe('Phase 2 — Catalog Public Reads', () => {
         expect(res.status).toBe(200);
         expect(res.body.data.name).toBe('Updated By Super Admin');
         expect(res.body.data.status).toBe('archived');
+      });
+    });
+  });
+
+  describe('Phase 2.5 — Admin Reads & Writes: Artifacts', () => {
+    const superAdminId = '33333333-3333-4333-8333-333333333333';
+    const adminUserId = '44444444-4444-4444-8444-444444444444';
+    const normalUserId = '55555555-5555-4555-8555-555555555555';
+    const museumId = '11111111-1111-4111-8111-111111111111';
+    const otherMuseumId = '22222222-2222-4222-8222-222222222222';
+    const artifactId1 = 'a1111111-1111-4111-8111-111111111111';
+    const artifactId2 = 'a2222222-2222-4222-8222-222222222222';
+    const artifactId3 = 'a3333333-3333-4333-8333-333333333333';
+    const otherArtifactId = 'a4444444-4444-4444-8444-444444444444';
+
+    beforeEach(() => {
+      mockState.users.clear();
+      mockState.userRoles.clear();
+      mockState.memberships = [];
+      mockState.museums = [];
+      mockState.artifacts = [];
+      mockState.souvenirProducts = [];
+      mockState.ticketTypes = [];
+      mockState.mediaAssets = [];
+      mockGetUser.mockReset();
+    });
+
+    function authAsSuperAdmin(userId = superAdminId) {
+      mockGetUser.mockResolvedValueOnce({
+        data: { user: { id: userId, email: 'super@museum.vn' } },
+      });
+      mockState.userRoles.set(userId, new Set(['super_admin', 'normal_user']));
+      mockState.users.add(userId);
+      return userId;
+    }
+
+    function authAsAdminUser(
+      userId = adminUserId,
+      memberships: { museumId: string; status?: MembershipStatus }[] = []
+    ) {
+      mockGetUser.mockResolvedValueOnce({
+        data: { user: { id: userId, email: 'admin@museum.vn' } },
+      });
+      mockState.userRoles.set(userId, new Set(['admin_user', 'normal_user']));
+      mockState.users.add(userId);
+      for (const m of memberships) {
+        mockState.memberships.push({
+          userId,
+          museumId: m.museumId,
+          status: m.status ?? 'active',
+        });
+      }
+      return userId;
+    }
+
+    function authAsNormalUser(userId = normalUserId) {
+      mockGetUser.mockResolvedValueOnce({
+        data: { user: { id: userId, email: 'user@museum.vn' } },
+      });
+      mockState.userRoles.set(userId, new Set(['normal_user']));
+      mockState.users.add(userId);
+      return userId;
+    }
+
+    describe('GET /api/v1/admin/museums/:museumId/artifacts', () => {
+      beforeEach(() => {
+        mockState.museums.push(
+          {
+            id: museumId,
+            name: 'Museum A',
+            slug: 'museum-a',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'draft',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: otherMuseumId,
+            name: 'Museum B',
+            slug: 'museum-b',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          }
+        );
+
+        mockState.artifacts.push(
+          {
+            id: artifactId1,
+            museumId,
+            name: 'Bronze Drum',
+            description: 'Ancient bronze drum',
+            period: 'Dong Son',
+            inventoryCode: 'ART-001',
+            status: 'draft',
+            createdBy: adminUserId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: artifactId2,
+            museumId,
+            name: 'Ceramic Vase',
+            description: 'Glazed vase',
+            period: 'Ly Dynasty',
+            inventoryCode: 'ART-002',
+            status: 'published',
+            createdBy: adminUserId,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          },
+          {
+            id: artifactId3,
+            museumId,
+            name: 'Ancient Sword',
+            description: 'Iron sword',
+            period: 'Tran Dynasty',
+            inventoryCode: 'ART-003',
+            status: 'archived',
+            createdBy: adminUserId,
+            createdAt: new Date('2026-01-03T10:00:00Z'),
+            updatedAt: new Date('2026-01-03T10:00:00Z'),
+          },
+          {
+            id: otherArtifactId,
+            museumId: otherMuseumId,
+            name: 'Other Artifact',
+            description: 'Different museum artifact',
+            period: null,
+            inventoryCode: 'ART-999',
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-04T10:00:00Z'),
+            updatedAt: new Date('2026-01-04T10:00:00Z'),
+          }
+        );
+      });
+
+      it('returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app).get(
+          `/api/v1/admin/museums/${museumId}/artifacts`
+        );
+        expect(anonRes.status).toBe(401);
+        expect(anonRes.body.error.code).toBe('unauthorized');
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer user-token');
+        expect(normalRes.status).toBe(403);
+        expect(normalRes.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('returns 400 validation_error when museumId is not a valid UUID', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .get('/api/v1/admin/museums/not-a-valid-uuid/artifacts')
+          .set('Authorization', 'Bearer super-token');
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 404 when museum does not exist', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .get(
+            '/api/v1/admin/museums/99999999-9999-4999-8999-999999999999/artifacts'
+          )
+          .set('Authorization', 'Bearer super-token');
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('not_found');
+      });
+
+      it('returns 403 when admin_user is not assigned to the museum', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId: otherMuseumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer admin-token');
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('returns 403 when admin_user membership is revoked', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'revoked' },
+        ]);
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer admin-token');
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('lists all artifacts including draft, published, and archived for authorized admin', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer admin-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination).toEqual({
+          total: 3,
+          limit: 24,
+          offset: 0,
+        });
+        expect(res.body.data).toHaveLength(3);
+        const statuses = res.body.data.map((a: any) => a.status);
+        expect(statuses).toContain('draft');
+        expect(statuses).toContain('published');
+        expect(statuses).toContain('archived');
+        // Ensure other museum's artifact is not leaked
+        const ids = res.body.data.map((a: any) => a.id);
+        expect(ids).not.toContain(otherArtifactId);
+      });
+
+      it('respects limit and offset pagination', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/artifacts?limit=1&offset=1`)
+          .set('Authorization', 'Bearer admin-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination).toEqual({
+          total: 3,
+          limit: 1,
+          offset: 1,
+        });
+        expect(res.body.data).toHaveLength(1);
+      });
+
+      it('returns artifacts for super_admin without museum membership', async () => {
+        authAsSuperAdmin();
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer super-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination.total).toBe(3);
+      });
+    });
+
+    describe('POST /api/v1/admin/museums/:museumId/artifacts', () => {
+      beforeEach(() => {
+        mockState.museums.push(
+          {
+            id: museumId,
+            name: 'Museum A',
+            slug: 'museum-a',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'draft',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: otherMuseumId,
+            name: 'Museum B',
+            slug: 'museum-b',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          }
+        );
+
+        mockState.artifacts.push(
+          {
+            id: artifactId1,
+            museumId,
+            name: 'Existing Artifact A',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-100',
+            status: 'draft',
+            createdBy: adminUserId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: otherArtifactId,
+            museumId: otherMuseumId,
+            name: 'Existing Artifact B',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-200',
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          }
+        );
+      });
+
+      it('returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .send({ name: 'New Artifact' });
+        expect(anonRes.status).toBe(401);
+        expect(anonRes.body.error.code).toBe('unauthorized');
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer user-token')
+          .send({ name: 'New Artifact' });
+        expect(normalRes.status).toBe(403);
+        expect(normalRes.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('returns 400 validation_error when museumId is not a valid UUID', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post('/api/v1/admin/museums/not-a-valid-uuid/artifacts')
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'New Artifact' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 404 when museum does not exist', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post(
+            '/api/v1/admin/museums/99999999-9999-4999-8999-999999999999/artifacts'
+          )
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'New Artifact' });
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('not_found');
+      });
+
+      it('returns 403 when admin_user does not manage the target museum', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId: otherMuseumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ name: 'Unauthorized Artifact' });
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('returns 400 validation_error on missing name', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ description: 'No name provided' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error on invalid status enum', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Artifact', status: 'invalid_status' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error when body contains unknown fields', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Artifact',
+            id: '88888888-8888-4888-8888-888888888888',
+            created_by: 'someone',
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 409 duplicate_inventory_code when inventory_code already exists in the same museum', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Duplicate Inventory Artifact',
+            inventory_code: 'INV-100',
+          });
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('duplicate_inventory_code');
+      });
+
+      it('creates artifact with server-derived museum_id and created_by for authorized admin', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Dong Son Bell',
+            description: 'Ancient bronze bell',
+            period: 'Dong Son',
+            inventory_code: 'INV-NEW-01',
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data).toMatchObject({
+          museum_id: museumId,
+          name: 'Dong Son Bell',
+          description: 'Ancient bronze bell',
+          period: 'Dong Son',
+          inventory_code: 'INV-NEW-01',
+          status: 'draft',
+          created_by: adminUserId,
+        });
+      });
+
+      it('allows creating artifact with an inventory_code that belongs to another museum', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        // INV-200 exists in otherMuseumId, should be allowed in museumId
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Cross-Museum Inventory Code Artifact',
+            inventory_code: 'INV-200',
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.inventory_code).toBe('INV-200');
+        expect(res.body.data.museum_id).toBe(museumId);
+      });
+
+      it('creates artifact for super_admin with published status', async () => {
+        authAsSuperAdmin();
+
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/artifacts`)
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Super Artifact',
+            status: 'published',
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.status).toBe('published');
+        expect(res.body.data.created_by).toBe(superAdminId);
+      });
+    });
+
+    describe('PATCH /api/v1/admin/artifacts/:id', () => {
+      beforeEach(() => {
+        mockState.museums.push(
+          {
+            id: museumId,
+            name: 'Museum A',
+            slug: 'museum-a',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'draft',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: otherMuseumId,
+            name: 'Museum B',
+            slug: 'museum-b',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          }
+        );
+
+        mockState.artifacts.push(
+          {
+            id: artifactId1,
+            museumId,
+            name: 'Original Artifact 1',
+            description: 'Original description',
+            period: 'Period 1',
+            inventoryCode: 'INV-A1',
+            status: 'draft',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: artifactId2,
+            museumId,
+            name: 'Original Artifact 2',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-A2',
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          },
+          {
+            id: otherArtifactId,
+            museumId: otherMuseumId,
+            name: 'Other Museum Artifact',
+            description: null,
+            period: null,
+            inventoryCode: 'INV-B1',
+            status: 'published',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-03T10:00:00Z'),
+            updatedAt: new Date('2026-01-03T10:00:00Z'),
+          }
+        );
+      });
+
+      it('returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .send({ name: 'Updated' });
+        expect(anonRes.status).toBe(401);
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer user-token')
+          .send({ name: 'Updated' });
+        expect(normalRes.status).toBe(403);
+      });
+
+      it('returns 400 validation_error when id is not a valid UUID', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch('/api/v1/admin/artifacts/not-a-valid-uuid')
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Updated' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error when body is empty', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({});
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error when body contains unknown fields', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            museum_id: otherMuseumId,
+            created_by: 'someone-else',
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 404 when artifact does not exist', async () => {
+        const nonExistentId = '99999999-9999-4999-8999-999999999999';
+
+        authAsSuperAdmin();
+        const res1 = await request(app)
+          .patch(`/api/v1/admin/artifacts/${nonExistentId}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Updated' });
+        expect(res1.status).toBe(404);
+        expect(res1.body.error.code).toBe('not_found');
+
+        authAsAdminUser();
+        const res2 = await request(app)
+          .patch(`/api/v1/admin/artifacts/${nonExistentId}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ name: 'Updated' });
+        expect(res2.status).toBe(404);
+        expect(res2.body.error.code).toBe('not_found');
+      });
+
+      it('returns 403 when admin_user does not manage the museum the artifact belongs to', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId: otherMuseumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ name: 'Unauthorized Update' });
+
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('returns 409 duplicate_inventory_code when inventory_code conflicts with another artifact in same museum', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ inventory_code: 'INV-A2' });
+
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('duplicate_inventory_code');
+      });
+
+      it('allows updating artifact with same inventory_code without conflict error', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ inventory_code: 'INV-A1', description: 'Updated description' });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.inventory_code).toBe('INV-A1');
+        expect(res.body.data.description).toBe('Updated description');
+      });
+
+      it('updates mutable fields for authorized museum admin', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Updated Artifact Name',
+            description: 'Updated artifact desc',
+            period: 'Champa',
+            inventory_code: 'INV-A1-NEW',
+            status: 'published',
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({
+          id: artifactId1,
+          museum_id: museumId,
+          name: 'Updated Artifact Name',
+          description: 'Updated artifact desc',
+          period: 'Champa',
+          inventory_code: 'INV-A1-NEW',
+          status: 'published',
+          created_by: superAdminId,
+        });
+      });
+
+      it('archives artifact via status: archived', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ status: 'archived' });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.status).toBe('archived');
+      });
+
+      it('updates artifact for super_admin', async () => {
+        authAsSuperAdmin();
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/artifacts/${artifactId1}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Updated By Super' });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.name).toBe('Updated By Super');
       });
     });
   });

@@ -18,7 +18,9 @@ import {
   NotFoundError,
 } from '../lib/errors';
 import type {
+  CreateArtifactBody,
   CreateMuseumBody,
+  PatchArtifactBody,
   PatchMuseumBody,
 } from '../lib/validation';
 
@@ -550,5 +552,169 @@ export async function updateAdminMuseum(
 
   return updated;
 }
+
+/** Lists all artifacts of a museum regardless of status for an authorized admin. */
+export async function listAdminMuseumArtifacts(
+  userId: string,
+  museumId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicArtifactsResult> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(artifacts)
+    .where(eq(artifacts.museumId, museumId));
+
+  const rows = await db
+    .select(publicArtifactFields)
+    .from(artifacts)
+    .where(eq(artifacts.museumId, museumId))
+    .orderBy(desc(artifacts.createdAt), asc(artifacts.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    artifacts: rows,
+    total: Number(total),
+  };
+}
+
+/** Creates an artifact in a museum. Caller must manage the museum. */
+export async function createAdminMuseumArtifact(
+  userId: string,
+  museumId: string,
+  data: CreateArtifactBody
+): Promise<PublicArtifactItem> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  if (data.inventory_code) {
+    const [existing] = await db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(
+        and(
+          eq(artifacts.museumId, museumId),
+          eq(artifacts.inventoryCode, data.inventory_code)
+        )
+      )
+      .limit(1);
+
+    if (existing) {
+      throw new ConflictError(
+        'Inventory code already exists for this museum',
+        'duplicate_inventory_code'
+      );
+    }
+  }
+
+  const [created] = await db
+    .insert(artifacts)
+    .values({
+      museumId,
+      name: data.name,
+      description: data.description ?? null,
+      period: data.period ?? null,
+      inventoryCode: data.inventory_code ?? null,
+      status: data.status ?? 'draft',
+      createdBy: userId,
+    })
+    .returning(publicArtifactFields);
+
+  return created;
+}
+
+/** Updates an artifact. First queries artifact to get museum_id, then checks permissions. */
+export async function updateAdminArtifact(
+  userId: string,
+  artifactId: string,
+  data: PatchArtifactBody
+): Promise<PublicArtifactItem> {
+  const [artifact] = await db
+    .select(publicArtifactFields)
+    .from(artifacts)
+    .where(eq(artifacts.id, artifactId))
+    .limit(1);
+
+  if (!artifact) {
+    throw new NotFoundError('Artifact not found');
+  }
+
+  const allowed = await canManageMuseum(userId, artifact.museum_id);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  if (
+    data.inventory_code !== undefined &&
+    data.inventory_code !== null &&
+    data.inventory_code !== artifact.inventory_code
+  ) {
+    const [conflict] = await db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(
+        and(
+          eq(artifacts.museumId, artifact.museum_id),
+          eq(artifacts.inventoryCode, data.inventory_code),
+          ne(artifacts.id, artifactId)
+        )
+      )
+      .limit(1);
+
+    if (conflict) {
+      throw new ConflictError(
+        'Inventory code already exists for this museum',
+        'duplicate_inventory_code'
+      );
+    }
+  }
+
+  const updateValues: Record<string, unknown> = {
+    updatedAt: new Date(),
+  };
+
+  if (data.name !== undefined) updateValues.name = data.name;
+  if (data.description !== undefined) updateValues.description = data.description;
+  if (data.period !== undefined) updateValues.period = data.period;
+  if (data.inventory_code !== undefined) updateValues.inventoryCode = data.inventory_code;
+  if (data.status !== undefined) updateValues.status = data.status;
+
+  const [updated] = await db
+    .update(artifacts)
+    .set(updateValues)
+    .where(eq(artifacts.id, artifactId))
+    .returning(publicArtifactFields);
+
+  return updated;
+}
+
 
 

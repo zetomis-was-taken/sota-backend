@@ -2,27 +2,34 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { sendCreated, sendPaginated, sendSuccess } from '../lib/response';
 import {
+  createArtifactBodySchema,
   createMuseumBodySchema,
   idParamSchema,
   mediaQuerySchema,
   museumIdParamSchema,
   paginationQuerySchema,
+  patchArtifactBodySchema,
   patchMuseumBodySchema,
+  type CreateArtifactBody,
   type CreateMuseumBody,
   type MediaQuery,
   type PaginationQuery,
+  type PatchArtifactBody,
   type PatchMuseumBody,
 } from '../lib/validation';
 import { requireAuth, requireSuperAdmin } from '../middleware/auth';
 import { getValidated, validate } from '../middleware/validate';
 import {
   createAdminMuseum,
+  createAdminMuseumArtifact,
   getPublicArtifactById,
   getPublicMuseumBySlug,
+  listAdminMuseumArtifacts,
   listAdminMuseums,
   listPublicMedia,
   listPublicMuseumArtifacts,
   listPublicMuseums,
+  updateAdminArtifact,
   updateAdminMuseum,
 } from '../services/catalog';
 
@@ -150,6 +157,69 @@ catalogRouter.patch(
     sendSuccess(res, museum);
   }
 );
+
+catalogRouter.get(
+  '/admin/museums/:museumId/artifacts',
+  requireAuth,
+  validate({ params: museumIdParamSchema, query: paginationQuerySchema }),
+  async (req, res) => {
+    const { params, query } = getValidated<
+      unknown,
+      PaginationQuery,
+      z.infer<typeof museumIdParamSchema>
+    >(req);
+    const { artifacts, total } = await listAdminMuseumArtifacts(
+      req.auth!.userId,
+      params.museumId,
+      query.limit,
+      query.offset
+    );
+    sendPaginated(res, artifacts, {
+      limit: query.limit,
+      offset: query.offset,
+      total,
+    });
+  }
+);
+
+catalogRouter.post(
+  '/admin/museums/:museumId/artifacts',
+  requireAuth,
+  validate({ params: museumIdParamSchema, body: createArtifactBodySchema }),
+  async (req, res) => {
+    const { params, body } = getValidated<
+      CreateArtifactBody,
+      unknown,
+      z.infer<typeof museumIdParamSchema>
+    >(req);
+    const artifact = await createAdminMuseumArtifact(
+      req.auth!.userId,
+      params.museumId,
+      body
+    );
+    sendCreated(res, artifact);
+  }
+);
+
+catalogRouter.patch(
+  '/admin/artifacts/:id',
+  requireAuth,
+  validate({ params: idParamSchema, body: patchArtifactBodySchema }),
+  async (req, res) => {
+    const { params, body } = getValidated<
+      PatchArtifactBody,
+      unknown,
+      z.infer<typeof idParamSchema>
+    >(req);
+    const artifact = await updateAdminArtifact(
+      req.auth!.userId,
+      params.id,
+      body
+    );
+    sendSuccess(res, artifact);
+  }
+);
+
 
 
 

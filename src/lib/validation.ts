@@ -120,3 +120,31 @@ export const patchMuseumBodySchema = z
   );
 
 export type PatchMuseumBody = z.infer<typeof patchMuseumBodySchema>;
+
+export const createArtifactBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    description: z.string().trim().nullable().optional(),
+    period: z.string().trim().nullable().optional(),
+    inventory_code: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateArtifactBody = z.infer<typeof createArtifactBodySchema>;
+
+export const patchArtifactBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    period: z.string().trim().nullable().optional(),
+    inventory_code: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchArtifactBody = z.infer<typeof patchArtifactBodySchema>;
