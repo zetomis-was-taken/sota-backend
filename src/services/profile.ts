@@ -164,15 +164,13 @@ export async function listAdminUsers(
 
   const resultUsers: AdminUserItem[] = userRows.map((user) => {
     const roles = roleMap.get(user.id) ?? [];
-    const hasAdminRole =
-      roles.includes('admin_user') || roles.includes('super_admin');
 
     return {
       id: user.id,
       display_name: user.display_name,
       phone: user.phone,
       roles,
-      managed_museums: hasAdminRole ? (museumMap.get(user.id) ?? []) : [],
+      managed_museums: museumMap.get(user.id) ?? [],
     };
   });
 
