@@ -40,6 +40,13 @@ export const paginationQuerySchema = z.object({
 
 export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
 
+export const mediaQuerySchema = paginationQuerySchema.extend({
+  entity_type: z.enum(['artifact', 'souvenir']),
+  entity_id: uuidSchema,
+});
+
+export type MediaQuery = z.infer<typeof mediaQuerySchema>;
+
 const DATE_YYYY_MM_DD_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Validates a `YYYY-MM-DD` calendar date without allowing rollovers (e.g. Feb 30). */
@@ -81,3 +88,63 @@ export const nonNegativeNumberSchema = z
   .number()
   .finite('Must be a finite number')
   .min(0, 'Must be at least 0');
+
+export const createMuseumBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    slug: z.string().trim().min(1, 'Slug is required'),
+    description: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    cover_image_path: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateMuseumBody = z.infer<typeof createMuseumBodySchema>;
+
+export const patchMuseumBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    slug: z.string().trim().min(1, 'Slug cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    cover_image_path: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchMuseumBody = z.infer<typeof patchMuseumBodySchema>;
+
+export const createArtifactBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    description: z.string().trim().nullable().optional(),
+    period: z.string().trim().nullable().optional(),
+    inventory_code: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateArtifactBody = z.infer<typeof createArtifactBodySchema>;
+
+export const patchArtifactBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    period: z.string().trim().nullable().optional(),
+    inventory_code: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchArtifactBody = z.infer<typeof patchArtifactBodySchema>;
