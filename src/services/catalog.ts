@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, ne } from 'drizzle-orm';
 import { db } from '../db';
 import {
   artifacts,
@@ -7,7 +7,20 @@ import {
   souvenirProducts,
   ticketTypes,
 } from '../db/schema';
-import { NotFoundError } from '../lib/errors';
+import {
+  canManageMuseum,
+  getManagedMuseumIds,
+  getUserRoles,
+} from '../lib/auth';
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from '../lib/errors';
+import type {
+  CreateMuseumBody,
+  PatchMuseumBody,
+} from '../lib/validation';
 
 export interface PublicMuseumItem {
   id: string;
@@ -97,6 +110,11 @@ export interface PublicMediaItem {
 
 export interface ListPublicMediaResult {
   media: PublicMediaItem[];
+  total: number;
+}
+
+export interface ListAdminMuseumsResult {
+  museums: PublicMuseumItem[];
   total: number;
 }
 
@@ -389,4 +407,148 @@ export async function listPublicMedia(
     total: Number(total),
   };
 }
+
+/** Lists museums managed by the caller, or all museums if super_admin. */
+export async function listAdminMuseums(
+  userId: string,
+  limit: number,
+  offset: number
+): Promise<ListAdminMuseumsResult> {
+  const roles = await getUserRoles(userId);
+
+  if (!roles.includes('super_admin') && !roles.includes('admin_user')) {
+    throw new ForbiddenError('Admin access required');
+  }
+
+  if (roles.includes('super_admin')) {
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(museums);
+
+    const rows = await db
+      .select(publicMuseumFields)
+      .from(museums)
+      .orderBy(desc(museums.createdAt), asc(museums.id))
+      .limit(limit)
+      .offset(offset);
+
+    return {
+      museums: rows,
+      total: Number(total),
+    };
+  }
+
+  const managedIds = await getManagedMuseumIds(userId);
+  if (managedIds.length === 0) {
+    return {
+      museums: [],
+      total: 0,
+    };
+  }
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(museums)
+    .where(inArray(museums.id, managedIds));
+
+  const rows = await db
+    .select(publicMuseumFields)
+    .from(museums)
+    .where(inArray(museums.id, managedIds))
+    .orderBy(desc(museums.createdAt), asc(museums.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    museums: rows,
+    total: Number(total),
+  };
+}
+
+/** Creates a museum. Caller must be super_admin. */
+export async function createAdminMuseum(
+  userId: string,
+  data: CreateMuseumBody
+): Promise<PublicMuseumItem> {
+  const [existing] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.slug, data.slug))
+    .limit(1);
+
+  if (existing) {
+    throw new ConflictError('Museum slug already exists', 'duplicate_slug');
+  }
+
+  const [created] = await db
+    .insert(museums)
+    .values({
+      name: data.name,
+      slug: data.slug,
+      description: data.description ?? null,
+      address: data.address ?? null,
+      city: data.city ?? null,
+      coverImagePath: data.cover_image_path ?? null,
+      status: data.status ?? 'draft',
+      createdBy: userId,
+    })
+    .returning(publicMuseumFields);
+
+  return created;
+}
+
+/** Updates a museum. Caller must be super_admin or active museum admin. */
+export async function updateAdminMuseum(
+  userId: string,
+  museumId: string,
+  data: PatchMuseumBody
+): Promise<PublicMuseumItem> {
+  const [existing] = await db
+    .select(publicMuseumFields)
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!existing) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  if (data.slug !== undefined && data.slug !== existing.slug) {
+    const [duplicate] = await db
+      .select({ id: museums.id })
+      .from(museums)
+      .where(and(eq(museums.slug, data.slug), ne(museums.id, museumId)))
+      .limit(1);
+
+    if (duplicate) {
+      throw new ConflictError('Museum slug already exists', 'duplicate_slug');
+    }
+  }
+
+  const updateValues: Record<string, unknown> = {
+    updatedAt: new Date(),
+  };
+
+  if (data.name !== undefined) updateValues.name = data.name;
+  if (data.slug !== undefined) updateValues.slug = data.slug;
+  if (data.description !== undefined) updateValues.description = data.description;
+  if (data.address !== undefined) updateValues.address = data.address;
+  if (data.city !== undefined) updateValues.city = data.city;
+  if (data.cover_image_path !== undefined) updateValues.coverImagePath = data.cover_image_path;
+  if (data.status !== undefined) updateValues.status = data.status;
+
+  const [updated] = await db
+    .update(museums)
+    .set(updateValues)
+    .where(eq(museums.id, museumId))
+    .returning(publicMuseumFields);
+
+  return updated;
+}
+
 

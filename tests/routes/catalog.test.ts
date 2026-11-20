@@ -1,6 +1,15 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTableName } from 'drizzle-orm';
+import type { AppRole } from '../../src/lib/auth';
+
+type MembershipStatus = 'active' | 'suspended' | 'revoked';
+
+interface MembershipRecord {
+  museumId: string;
+  userId: string;
+  status: MembershipStatus;
+}
 
 interface MuseumRecord {
   id: string;
@@ -77,8 +86,13 @@ interface OrderByClause {
   direction: 'asc' | 'desc';
 }
 
-const { mockState, mockDb } = vi.hoisted(() => {
+const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
+  const mockGetUser = vi.fn();
+
   const mockState = {
+    users: new Set<string>(),
+    userRoles: new Map<string, Set<AppRole>>(),
+    memberships: [] as MembershipRecord[],
     museums: [] as MuseumRecord[],
     artifacts: [] as ArtifactRecord[],
     souvenirProducts: [] as SouvenirProductRecord[],
@@ -86,10 +100,16 @@ const { mockState, mockDb } = vi.hoisted(() => {
     mediaAssets: [] as MediaAssetRecord[],
   };
 
-  function extractEqFilters(
+  interface FilterConditions {
+    eq: Record<string, unknown>;
+    ne: Record<string, unknown>;
+    in: Record<string, unknown[]>;
+  }
+
+  function extractFilters(
     node: unknown,
-    out: Record<string, unknown> = {}
-  ): Record<string, unknown> {
+    out: FilterConditions = { eq: {}, ne: {}, in: {} }
+  ): FilterConditions {
     if (!node || typeof node !== 'object') {
       return out;
     }
@@ -98,23 +118,43 @@ const { mockState, mockDb } = vi.hoisted(() => {
       return out;
     }
 
-    let currentColumn: string | null = null;
+    let currentCol: string | null = null;
+    let isNe = false;
+    let isIn = false;
+
     for (const chunk of chunks) {
       if (chunk && typeof chunk === 'object') {
-        const candidate = chunk as {
-          queryChunks?: unknown[];
-          name?: unknown;
-          table?: unknown;
-          encoder?: unknown;
-          value?: unknown;
-        };
+        const candidate = chunk as any;
         if (Array.isArray(candidate.queryChunks)) {
-          extractEqFilters(candidate, out);
+          extractFilters(candidate, out);
         } else if (typeof candidate.name === 'string' && candidate.table) {
-          currentColumn = candidate.name;
-        } else if ('encoder' in candidate && currentColumn) {
-          out[currentColumn] = candidate.value;
-          currentColumn = null;
+          currentCol = candidate.name;
+        } else if (
+          Array.isArray(candidate.value) &&
+          candidate.value.some(
+            (v: any) => typeof v === 'string' && v.includes('<>')
+          )
+        ) {
+          isNe = true;
+        } else if (
+          Array.isArray(candidate.value) &&
+          candidate.value.some(
+            (v: any) => typeof v === 'string' && v.includes('in')
+          )
+        ) {
+          isIn = true;
+        } else if (Array.isArray(candidate) && isIn && currentCol) {
+          out.in[currentCol] = candidate.map((p: any) => p?.value ?? p);
+          currentCol = null;
+          isIn = false;
+        } else if ('encoder' in candidate && currentCol) {
+          if (isNe) {
+            out.ne[currentCol] = candidate.value;
+            isNe = false;
+          } else {
+            out.eq[currentCol] = candidate.value;
+          }
+          currentCol = null;
         }
       }
     }
@@ -158,6 +198,106 @@ const { mockState, mockDb } = vi.hoisted(() => {
   }
 
   const mockDb = {
+    transaction: vi.fn(async (fn: (tx: any) => Promise<void>) => {
+      await fn({
+        insert: vi.fn((_table: unknown) => ({
+          values: vi.fn((val: any) => ({
+            onConflictDoNothing: vi.fn(async () => {
+              if (val.id) {
+                mockState.users.add(val.id);
+              }
+              if (val.userId && val.role) {
+                const roles =
+                  mockState.userRoles.get(val.userId) ?? new Set<AppRole>();
+                roles.add(val.role);
+                mockState.userRoles.set(val.userId, roles);
+              }
+            }),
+          })),
+        })),
+      });
+    }),
+    insert: vi.fn((_table: any) => ({
+      values: vi.fn((val: any) => {
+        const now = new Date();
+        const newMuseum: MuseumRecord = {
+          id:
+            val.id ??
+            '11111111-1111-4111-8111-999999999999',
+          name: val.name,
+          slug: val.slug,
+          description: val.description ?? null,
+          address: val.address ?? null,
+          city: val.city ?? null,
+          coverImagePath: val.coverImagePath ?? null,
+          status: val.status ?? 'draft',
+          createdBy: val.createdBy ?? null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        mockState.museums.push(newMuseum);
+        return {
+          returning: vi.fn(async () => [
+            {
+              id: newMuseum.id,
+              name: newMuseum.name,
+              slug: newMuseum.slug,
+              description: newMuseum.description,
+              address: newMuseum.address,
+              city: newMuseum.city,
+              cover_image_path: newMuseum.coverImagePath,
+              status: newMuseum.status,
+              created_by: newMuseum.createdBy,
+              created_at: newMuseum.createdAt,
+              updated_at: newMuseum.updatedAt,
+            },
+          ]),
+        };
+      }),
+    })),
+    update: vi.fn((_table: any) => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn((condition: unknown) => {
+          const filters = extractFilters(condition);
+          const museumId = String(filters.eq.id ?? '');
+          const m = mockState.museums.find((item) => item.id === museumId);
+          return {
+            returning: vi.fn(async () => {
+              if (!m) return [];
+              if (values.name !== undefined) m.name = values.name as string;
+              if (values.slug !== undefined) m.slug = values.slug as string;
+              if (values.description !== undefined)
+                m.description = values.description as string | null;
+              if (values.address !== undefined)
+                m.address = values.address as string | null;
+              if (values.city !== undefined)
+                m.city = values.city as string | null;
+              if (values.coverImagePath !== undefined)
+                m.coverImagePath = values.coverImagePath as string | null;
+              if (values.status !== undefined)
+                m.status = values.status as any;
+              if (values.updatedAt instanceof Date)
+                m.updatedAt = values.updatedAt;
+              return [
+                {
+                  id: m.id,
+                  name: m.name,
+                  slug: m.slug,
+                  description: m.description,
+                  address: m.address,
+                  city: m.city,
+                  cover_image_path: m.coverImagePath,
+                  status: m.status,
+                  created_by: m.createdBy,
+                  created_at: m.createdAt,
+                  updated_at: m.updatedAt,
+                },
+              ];
+            }),
+          };
+        }),
+      })),
+    })),
     select: vi.fn((fields: Record<string, unknown>) => {
       let activeTable = '';
 
@@ -166,7 +306,7 @@ const { mockState, mockDb } = vi.hoisted(() => {
         options = {
           limit: Infinity,
           offset: 0,
-          filters: {} as Record<string, unknown>,
+          filters: { eq: {}, ne: {}, in: {} } as FilterConditions,
           orderBy: [] as OrderByClause[],
         }
       ) => {
@@ -174,57 +314,116 @@ const { mockState, mockDb } = vi.hoisted(() => {
           let rows = getRows();
 
           if (activeTable === 'museums') {
-            if (options.filters.status) {
-              rows = rows.filter((m) => m.status === options.filters.status);
+            if (options.filters.eq.status) {
+              rows = rows.filter(
+                (m) => m.status === options.filters.eq.status
+              );
             }
-            if (options.filters.slug) {
-              rows = rows.filter((m) => m.slug === options.filters.slug);
+            if (options.filters.eq.slug) {
+              rows = rows.filter((m) => m.slug === options.filters.eq.slug);
             }
-            if (options.filters.id) {
-              rows = rows.filter((m) => m.id === options.filters.id);
+            if (options.filters.eq.id) {
+              rows = rows.filter((m) => m.id === options.filters.eq.id);
+            }
+            if (options.filters.ne.id) {
+              rows = rows.filter((m) => m.id !== options.filters.ne.id);
+            }
+            if (options.filters.in.id) {
+              rows = rows.filter((m) =>
+                options.filters.in.id.includes(m.id)
+              );
+            }
+          } else if (activeTable === 'user_roles') {
+            const targetUserId =
+              options.filters.eq.user_id ?? options.filters.eq.userId;
+            if (targetUserId) {
+              rows = rows.filter((r) => r.user_id === targetUserId);
+            }
+            if (options.filters.eq.role) {
+              rows = rows.filter(
+                (r) => r.role === options.filters.eq.role
+              );
+            }
+          } else if (activeTable === 'museum_admins') {
+            const targetUserId =
+              options.filters.eq.user_id ?? options.filters.eq.userId;
+            if (targetUserId) {
+              rows = rows.filter((m) => m.user_id === targetUserId);
+            }
+            const targetMuseumId =
+              options.filters.eq.museum_id ?? options.filters.eq.museumId;
+            if (targetMuseumId) {
+              rows = rows.filter((m) => m.museum_id === targetMuseumId);
+            }
+            if (options.filters.eq.status) {
+              rows = rows.filter(
+                (m) => m.status === options.filters.eq.status
+              );
+            }
+          } else if (activeTable === 'users') {
+            if (options.filters.eq.id) {
+              rows = rows.filter((u) => u.id === options.filters.eq.id);
             }
           } else if (activeTable === 'artifacts') {
-            if (options.filters.museum_id) {
-              rows = rows.filter((a) => a.museum_id === options.filters.museum_id);
+            if (options.filters.eq.museum_id) {
+              rows = rows.filter(
+                (a) => a.museum_id === options.filters.eq.museum_id
+              );
             }
-            if (options.filters.status) {
-              rows = rows.filter((a) => a.status === options.filters.status);
+            if (options.filters.eq.status) {
+              rows = rows.filter(
+                (a) => a.status === options.filters.eq.status
+              );
             }
-            if (options.filters.id) {
-              rows = rows.filter((a) => a.id === options.filters.id);
+            if (options.filters.eq.id) {
+              rows = rows.filter((a) => a.id === options.filters.eq.id);
             }
           } else if (activeTable === 'souvenir_products') {
-            if (options.filters.museum_id) {
-              rows = rows.filter((p) => p.museum_id === options.filters.museum_id);
+            if (options.filters.eq.museum_id) {
+              rows = rows.filter(
+                (p) => p.museum_id === options.filters.eq.museum_id
+              );
             }
-            if (options.filters.status) {
-              rows = rows.filter((p) => p.status === options.filters.status);
+            if (options.filters.eq.status) {
+              rows = rows.filter(
+                (p) => p.status === options.filters.eq.status
+              );
             }
-            if (options.filters.id) {
-              rows = rows.filter((p) => p.id === options.filters.id);
+            if (options.filters.eq.id) {
+              rows = rows.filter((p) => p.id === options.filters.eq.id);
             }
           } else if (activeTable === 'ticket_types') {
-            if (options.filters.museum_id) {
-              rows = rows.filter((t) => t.museum_id === options.filters.museum_id);
+            if (options.filters.eq.museum_id) {
+              rows = rows.filter(
+                (t) => t.museum_id === options.filters.eq.museum_id
+              );
             }
-            if (options.filters.is_available !== undefined) {
-              rows = rows.filter((t) => t.is_available === options.filters.is_available);
+            if (options.filters.eq.is_available !== undefined) {
+              rows = rows.filter(
+                (t) => t.is_available === options.filters.eq.is_available
+              );
             }
-            if (options.filters.id) {
-              rows = rows.filter((t) => t.id === options.filters.id);
+            if (options.filters.eq.id) {
+              rows = rows.filter((t) => t.id === options.filters.eq.id);
             }
           } else if (activeTable === 'media_assets') {
-            if (options.filters.museum_id) {
-              rows = rows.filter((m) => m.museum_id === options.filters.museum_id);
+            if (options.filters.eq.museum_id) {
+              rows = rows.filter(
+                (m) => m.museum_id === options.filters.eq.museum_id
+              );
             }
-            if (options.filters.entity_type) {
-              rows = rows.filter((m) => m.entity_type === options.filters.entity_type);
+            if (options.filters.eq.entity_type) {
+              rows = rows.filter(
+                (m) => m.entity_type === options.filters.eq.entity_type
+              );
             }
-            if (options.filters.entity_id) {
-              rows = rows.filter((m) => m.entity_id === options.filters.entity_id);
+            if (options.filters.eq.entity_id) {
+              rows = rows.filter(
+                (m) => m.entity_id === options.filters.eq.entity_id
+              );
             }
-            if (options.filters.id) {
-              rows = rows.filter((m) => m.id === options.filters.id);
+            if (options.filters.eq.id) {
+              rows = rows.filter((m) => m.id === options.filters.eq.id);
             }
           }
 
@@ -263,7 +462,7 @@ const { mockState, mockDb } = vi.hoisted(() => {
             return createQueryPromise(getRows, { ...options, orderBy });
           }),
           where: vi.fn((condition: unknown) => {
-            const filters = extractEqFilters(condition);
+            const filters = extractFilters(condition);
             return createQueryPromise(getRows, { ...options, filters });
           }),
           limit: vi.fn((n: number) => {
@@ -308,6 +507,27 @@ const { mockState, mockDb } = vi.hoisted(() => {
                 created_at: m.createdAt,
                 updated_at: m.updatedAt,
               }));
+            }
+            if (tableName === 'user_roles') {
+              const rows: { user_id: string; userId: string; role: string }[] = [];
+              for (const [uid, rSet] of mockState.userRoles.entries()) {
+                for (const r of rSet) {
+                  rows.push({ user_id: uid, userId: uid, role: r });
+                }
+              }
+              return rows;
+            }
+            if (tableName === 'museum_admins') {
+              return mockState.memberships.map((m) => ({
+                museum_id: m.museumId,
+                museumId: m.museumId,
+                user_id: m.userId,
+                userId: m.userId,
+                status: m.status,
+              }));
+            }
+            if (tableName === 'users') {
+              return Array.from(mockState.users).map((uid) => ({ id: uid }));
             }
             if (tableName === 'artifacts') {
               return mockState.artifacts.map((a) => ({
@@ -378,11 +598,19 @@ const { mockState, mockDb } = vi.hoisted(() => {
     }),
   };
 
-  return { mockState, mockDb };
+  return { mockGetUser, mockState, mockDb };
 });
 
 vi.mock('../../src/db', () => ({
   db: mockDb,
+}));
+
+vi.mock('../../src/config/supabase', () => ({
+  getSupabaseClient: () => ({
+    auth: {
+      getUser: mockGetUser,
+    },
+  }),
 }));
 
 import { createApp } from '../../src/app';
@@ -392,6 +620,10 @@ const app = createApp();
 describe('Phase 2 — Catalog Public Reads', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetUser.mockReset();
+    mockState.users.clear();
+    mockState.userRoles.clear();
+    mockState.memberships = [];
     mockState.museums = [];
     mockState.artifacts = [];
     mockState.souvenirProducts = [];
@@ -2162,5 +2394,507 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
     });
   });
+
+  describe('Phase 2.4 — Admin Reads & Writes: Museums', () => {
+    const superAdminId = '00000000-0000-4000-8000-000000000001';
+    const adminUserId = '00000000-0000-4000-8000-000000000002';
+    const normalUserId = '00000000-0000-4000-8000-000000000003';
+
+    function authAsSuperAdmin(userId = superAdminId) {
+      mockGetUser.mockResolvedValueOnce({
+        data: { user: { id: userId, email: 'super@museum.vn' } },
+      });
+      mockState.userRoles.set(userId, new Set(['super_admin', 'normal_user']));
+      mockState.users.add(userId);
+      return userId;
+    }
+
+    function authAsAdminUser(
+      userId = adminUserId,
+      memberships: { museumId: string; status?: MembershipStatus }[] = []
+    ) {
+      mockGetUser.mockResolvedValueOnce({
+        data: { user: { id: userId, email: 'admin@museum.vn' } },
+      });
+      mockState.userRoles.set(userId, new Set(['admin_user', 'normal_user']));
+      mockState.users.add(userId);
+      for (const m of memberships) {
+        mockState.memberships.push({
+          userId,
+          museumId: m.museumId,
+          status: m.status ?? 'active',
+        });
+      }
+      return userId;
+    }
+
+    function authAsNormalUser(userId = normalUserId) {
+      mockGetUser.mockResolvedValueOnce({
+        data: { user: { id: userId, email: 'user@museum.vn' } },
+      });
+      mockState.userRoles.set(userId, new Set(['normal_user']));
+      mockState.users.add(userId);
+      return userId;
+    }
+
+    describe('POST /api/v1/admin/museums', () => {
+      it('returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app)
+          .post('/api/v1/admin/museums')
+          .send({ name: 'New Museum', slug: 'new-museum' });
+        expect(anonRes.status).toBe(401);
+        expect(anonRes.body.error.code).toBe('unauthorized');
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer user-token')
+          .send({ name: 'New Museum', slug: 'new-museum' });
+        expect(normalRes.status).toBe(403);
+        expect(normalRes.body.error.code).toBe('forbidden');
+      });
+
+      it('returns 403 for admin_user (not super_admin)', async () => {
+        authAsAdminUser();
+        const res = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer admin-token')
+          .send({ name: 'New Museum', slug: 'new-museum' });
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('forbidden');
+      });
+
+      it('returns 400 validation_error when name or slug is empty or missing', async () => {
+        authAsSuperAdmin();
+        const res1 = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: '', slug: 'valid-slug' });
+        expect(res1.status).toBe(400);
+        expect(res1.body.error.code).toBe('validation_error');
+
+        authAsSuperAdmin();
+        const res2 = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Museum Name' });
+        expect(res2.status).toBe(400);
+        expect(res2.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error when unknown fields like id or created_by are passed', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Valid Name',
+            slug: 'valid-slug',
+            id: '11111111-1111-4111-8111-111111111111',
+            created_by: 'hacker-id',
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 409 on duplicate slug', async () => {
+        mockState.museums.push({
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'Existing Museum',
+          slug: 'existing-museum',
+          description: null,
+          address: null,
+          city: null,
+          coverImagePath: null,
+          status: 'published',
+          createdBy: null,
+          createdAt: new Date('2026-01-01T10:00:00Z'),
+          updatedAt: new Date('2026-01-01T10:00:00Z'),
+        });
+
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Another Museum',
+            slug: 'existing-museum',
+          });
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('duplicate_slug');
+      });
+
+      it('creates museum and returns 201 with created_by populated for super_admin', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'National Fine Arts Museum',
+            slug: 'fine-arts',
+            description: 'A museum of fine arts',
+            address: '66 Nguyen Thai Hoc',
+            city: 'Hanoi',
+            cover_image_path: '/fine-arts.jpg',
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data).toMatchObject({
+          name: 'National Fine Arts Museum',
+          slug: 'fine-arts',
+          description: 'A museum of fine arts',
+          address: '66 Nguyen Thai Hoc',
+          city: 'Hanoi',
+          cover_image_path: '/fine-arts.jpg',
+          status: 'draft',
+          created_by: superAdminId,
+        });
+        expect(res.body.data.id).toBeDefined();
+        expect(res.body.data.created_at).toBeDefined();
+      });
+
+      it('creates museum with explicit status', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .post('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Published Museum',
+            slug: 'published-museum',
+            status: 'published',
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.status).toBe('published');
+      });
+    });
+
+    describe('GET /api/v1/admin/museums', () => {
+      const museum1 = '11111111-1111-4111-8111-111111111111';
+      const museum2 = '22222222-2222-4222-8222-222222222222';
+      const museum3 = '33333333-3333-4333-8333-333333333333';
+
+      beforeEach(() => {
+        mockState.museums.push(
+          {
+            id: museum1,
+            name: 'Draft Museum 1',
+            slug: 'draft-1',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'draft',
+            createdBy: null,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: museum2,
+            name: 'Published Museum 2',
+            slug: 'published-2',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'published',
+            createdBy: null,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          },
+          {
+            id: museum3,
+            name: 'Archived Museum 3',
+            slug: 'archived-3',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'archived',
+            createdBy: null,
+            createdAt: new Date('2026-01-03T10:00:00Z'),
+            updatedAt: new Date('2026-01-03T10:00:00Z'),
+          }
+        );
+      });
+
+      it('returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app).get('/api/v1/admin/museums');
+        expect(anonRes.status).toBe(401);
+        expect(anonRes.body.error.code).toBe('unauthorized');
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .get('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer user-token');
+        expect(normalRes.status).toBe(403);
+        expect(normalRes.body.error.code).toBe('forbidden');
+      });
+
+      it('returns only active managed museums for admin_user', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId: museum1, status: 'active' },
+          { museumId: museum3, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .get('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer admin-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination.total).toBe(2);
+        expect(res.body.data.map((m: any) => m.id)).toEqual([
+          museum3,
+          museum1,
+        ]);
+      });
+
+      it('returns empty list and total=0 for admin_user with no active managed museums', async () => {
+        authAsAdminUser(adminUserId, []);
+
+        const res = await request(app)
+          .get('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer admin-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({
+          data: [],
+          pagination: {
+            limit: 24,
+            offset: 0,
+            total: 0,
+          },
+        });
+      });
+
+      it('returns all museums for super_admin across all statuses', async () => {
+        authAsSuperAdmin();
+
+        const res = await request(app)
+          .get('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer super-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination.total).toBe(3);
+        expect(res.body.data).toHaveLength(3);
+        expect(res.body.data.map((m: any) => m.id)).toEqual([
+          museum3,
+          museum2,
+          museum1,
+        ]);
+      });
+
+      it('respects limit and offset pagination parameters', async () => {
+        authAsSuperAdmin();
+
+        const res = await request(app)
+          .get('/api/v1/admin/museums?limit=2&offset=1')
+          .set('Authorization', 'Bearer super-token');
+
+        expect(res.status).toBe(200);
+        expect(res.body.pagination).toEqual({
+          limit: 2,
+          offset: 1,
+          total: 3,
+        });
+        expect(res.body.data).toHaveLength(2);
+        expect(res.body.data[0].id).toBe(museum2);
+        expect(res.body.data[1].id).toBe(museum1);
+      });
+
+      it('loses access on the next request after museum_admins membership is revoked', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId: museum1, status: 'active' },
+        ]);
+
+        const res1 = await request(app)
+          .get('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer admin-token');
+        expect(res1.status).toBe(200);
+        expect(res1.body.pagination.total).toBe(1);
+
+        // Revoke membership
+        mockState.memberships[0].status = 'revoked';
+
+        authAsAdminUser(adminUserId);
+        const res2 = await request(app)
+          .get('/api/v1/admin/museums')
+          .set('Authorization', 'Bearer admin-token');
+        expect(res2.status).toBe(200);
+        expect(res2.body.pagination.total).toBe(0);
+        expect(res2.body.data).toEqual([]);
+      });
+    });
+
+    describe('PATCH /api/v1/admin/museums/:id', () => {
+      const museumId = '11111111-1111-4111-8111-111111111111';
+      const otherMuseumId = '22222222-2222-4222-8222-222222222222';
+
+      beforeEach(() => {
+        mockState.museums.push(
+          {
+            id: museumId,
+            name: 'Original Museum',
+            slug: 'original-museum',
+            description: 'Original desc',
+            address: '123 St',
+            city: 'Hue',
+            coverImagePath: '/covers/orig.jpg',
+            status: 'draft',
+            createdBy: superAdminId,
+            createdAt: new Date('2026-01-01T10:00:00Z'),
+            updatedAt: new Date('2026-01-01T10:00:00Z'),
+          },
+          {
+            id: otherMuseumId,
+            name: 'Other Museum',
+            slug: 'other-museum',
+            description: null,
+            address: null,
+            city: null,
+            coverImagePath: null,
+            status: 'published',
+            createdBy: null,
+            createdAt: new Date('2026-01-02T10:00:00Z'),
+            updatedAt: new Date('2026-01-02T10:00:00Z'),
+          }
+        );
+      });
+
+      it('returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .send({ name: 'Updated' });
+        expect(anonRes.status).toBe(401);
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer user-token')
+          .send({ name: 'Updated' });
+        expect(normalRes.status).toBe(403);
+      });
+
+      it('returns 400 validation_error when id is not a valid UUID', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch('/api/v1/admin/museums/not-a-valid-uuid')
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Updated' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error when body is empty', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({});
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 400 validation_error when body has unknown fields like id or created_by', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            id: '99999999-9999-4999-8999-999999999999',
+            created_by: 'new-creator',
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('validation_error');
+      });
+
+      it('returns 404 for a museum that does not exist', async () => {
+        const nonExistentId = '99999999-9999-4999-8999-999999999999';
+
+        authAsSuperAdmin();
+        const res1 = await request(app)
+          .patch(`/api/v1/admin/museums/${nonExistentId}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ name: 'Updated' });
+        expect(res1.status).toBe(404);
+        expect(res1.body.error.code).toBe('not_found');
+
+        authAsAdminUser();
+        const res2 = await request(app)
+          .patch(`/api/v1/admin/museums/${nonExistentId}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ name: 'Updated' });
+        expect(res2.status).toBe(404);
+        expect(res2.body.error.code).toBe('not_found');
+      });
+
+      it('returns 403 when admin_user does not manage this museum', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId: otherMuseumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({ name: 'Unauthorized Update' });
+
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('not_museum_admin');
+      });
+
+      it('returns 409 when slug conflicts with another museum', async () => {
+        authAsSuperAdmin();
+        const res = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({ slug: 'other-museum' });
+
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('duplicate_slug');
+      });
+
+      it('updates museum for authorized museum admin', async () => {
+        authAsAdminUser(adminUserId, [
+          { museumId, status: 'active' },
+        ]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Updated By Admin',
+            status: 'published',
+            city: 'Da Nang',
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data).toMatchObject({
+          id: museumId,
+          name: 'Updated By Admin',
+          slug: 'original-museum',
+          status: 'published',
+          city: 'Da Nang',
+          created_by: superAdminId,
+        });
+      });
+
+      it('updates museum for super_admin', async () => {
+        authAsSuperAdmin();
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/museums/${museumId}`)
+          .set('Authorization', 'Bearer super-token')
+          .send({
+            name: 'Updated By Super Admin',
+            status: 'archived',
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.name).toBe('Updated By Super Admin');
+        expect(res.body.data.status).toBe('archived');
+      });
+    });
+  });
 });
+
 

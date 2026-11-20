@@ -1,21 +1,29 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { sendPaginated, sendSuccess } from '../lib/response';
+import { sendCreated, sendPaginated, sendSuccess } from '../lib/response';
 import {
+  createMuseumBodySchema,
   idParamSchema,
   mediaQuerySchema,
   museumIdParamSchema,
   paginationQuerySchema,
+  patchMuseumBodySchema,
+  type CreateMuseumBody,
   type MediaQuery,
   type PaginationQuery,
+  type PatchMuseumBody,
 } from '../lib/validation';
+import { requireAuth, requireSuperAdmin } from '../middleware/auth';
 import { getValidated, validate } from '../middleware/validate';
 import {
+  createAdminMuseum,
   getPublicArtifactById,
   getPublicMuseumBySlug,
+  listAdminMuseums,
   listPublicMedia,
   listPublicMuseumArtifacts,
   listPublicMuseums,
+  updateAdminMuseum,
 } from '../services/catalog';
 
 export const catalogRouter = Router();
@@ -100,5 +108,48 @@ catalogRouter.get(
     });
   }
 );
+
+catalogRouter.get(
+  '/admin/museums',
+  requireAuth,
+  validate({ query: paginationQuerySchema }),
+  async (req, res) => {
+    const { limit, offset } = getValidated<unknown, PaginationQuery>(req).query;
+    const { museums, total } = await listAdminMuseums(
+      req.auth!.userId,
+      limit,
+      offset
+    );
+    sendPaginated(res, museums, { limit, offset, total });
+  }
+);
+
+catalogRouter.post(
+  '/admin/museums',
+  requireAuth,
+  requireSuperAdmin,
+  validate({ body: createMuseumBodySchema }),
+  async (req, res) => {
+    const { body } = getValidated<CreateMuseumBody>(req);
+    const museum = await createAdminMuseum(req.auth!.userId, body);
+    sendCreated(res, museum);
+  }
+);
+
+catalogRouter.patch(
+  '/admin/museums/:id',
+  requireAuth,
+  validate({ params: idParamSchema, body: patchMuseumBodySchema }),
+  async (req, res) => {
+    const { params, body } = getValidated<
+      PatchMuseumBody,
+      unknown,
+      z.infer<typeof idParamSchema>
+    >(req);
+    const museum = await updateAdminMuseum(req.auth!.userId, params.id, body);
+    sendSuccess(res, museum);
+  }
+);
+
 
 

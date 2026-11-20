@@ -88,3 +88,35 @@ export const nonNegativeNumberSchema = z
   .number()
   .finite('Must be a finite number')
   .min(0, 'Must be at least 0');
+
+export const createMuseumBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    slug: z.string().trim().min(1, 'Slug is required'),
+    description: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    cover_image_path: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateMuseumBody = z.infer<typeof createMuseumBodySchema>;
+
+export const patchMuseumBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    slug: z.string().trim().min(1, 'Slug cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    address: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    cover_image_path: z.string().trim().nullable().optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchMuseumBody = z.infer<typeof patchMuseumBodySchema>;
