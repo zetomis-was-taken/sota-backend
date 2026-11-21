@@ -20,8 +20,12 @@ import {
 import type {
   CreateArtifactBody,
   CreateMuseumBody,
+  CreateProductBody,
+  CreateTicketTypeBody,
   PatchArtifactBody,
   PatchMuseumBody,
+  PatchProductBody,
+  PatchTicketTypeBody,
 } from '../lib/validation';
 
 export interface PublicMuseumItem {
@@ -91,6 +95,16 @@ export interface ListPublicMuseumsResult {
 
 export interface ListPublicArtifactsResult {
   artifacts: PublicArtifactItem[];
+  total: number;
+}
+
+export interface ListPublicProductsResult {
+  products: PublicSouvenirProductItem[];
+  total: number;
+}
+
+export interface ListPublicTicketTypesResult {
+  ticket_types: PublicTicketTypeItem[];
   total: number;
 }
 
@@ -715,6 +729,400 @@ export async function updateAdminArtifact(
 
   return updated;
 }
+
+/** Lists published souvenir products of a published museum. */
+export async function listPublicMuseumProducts(
+  museumId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicProductsResult> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(and(eq(museums.id, museumId), eq(museums.status, 'published')))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const whereCondition = and(
+    eq(souvenirProducts.museumId, museumId),
+    eq(souvenirProducts.status, 'published')
+  );
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(souvenirProducts)
+    .where(whereCondition);
+
+  const rows = await db
+    .select(publicSouvenirProductFields)
+    .from(souvenirProducts)
+    .where(whereCondition)
+    .orderBy(desc(souvenirProducts.createdAt), asc(souvenirProducts.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    products: rows,
+    total: Number(total),
+  };
+}
+
+/** Gets a published souvenir product by ID. Also requires parent museum to be published. */
+export async function getPublicProductById(
+  productId: string
+): Promise<PublicSouvenirProductItem> {
+  const [product] = await db
+    .select(publicSouvenirProductFields)
+    .from(souvenirProducts)
+    .where(eq(souvenirProducts.id, productId))
+    .limit(1);
+
+  if (!product || product.status !== 'published') {
+    throw new NotFoundError('Product not found');
+  }
+
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(and(eq(museums.id, product.museum_id), eq(museums.status, 'published')))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Product not found');
+  }
+
+  return product;
+}
+
+/** Lists available ticket types of a published museum. */
+export async function listPublicMuseumTicketTypes(
+  museumId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicTicketTypesResult> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(and(eq(museums.id, museumId), eq(museums.status, 'published')))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const whereCondition = and(
+    eq(ticketTypes.museumId, museumId),
+    eq(ticketTypes.isAvailable, true)
+  );
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(ticketTypes)
+    .where(whereCondition);
+
+  const rows = await db
+    .select(publicTicketTypeFields)
+    .from(ticketTypes)
+    .where(whereCondition)
+    .orderBy(desc(ticketTypes.createdAt), asc(ticketTypes.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    ticket_types: rows,
+    total: Number(total),
+  };
+}
+
+/** Lists all souvenir products of a museum regardless of status for an authorized admin. */
+export async function listAdminMuseumProducts(
+  userId: string,
+  museumId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicProductsResult> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const whereCondition = eq(souvenirProducts.museumId, museumId);
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(souvenirProducts)
+    .where(whereCondition);
+
+  const rows = await db
+    .select(publicSouvenirProductFields)
+    .from(souvenirProducts)
+    .where(whereCondition)
+    .orderBy(desc(souvenirProducts.createdAt), asc(souvenirProducts.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    products: rows,
+    total: Number(total),
+  };
+}
+
+/** Creates a souvenir product in a museum. Caller must manage the museum. */
+export async function createAdminMuseumProduct(
+  userId: string,
+  museumId: string,
+  data: CreateProductBody
+): Promise<PublicSouvenirProductItem> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  if (data.sku) {
+    const [existing] = await db
+      .select({ id: souvenirProducts.id })
+      .from(souvenirProducts)
+      .where(
+        and(
+          eq(souvenirProducts.museumId, museumId),
+          eq(souvenirProducts.sku, data.sku)
+        )
+      )
+      .limit(1);
+
+    if (existing) {
+      throw new ConflictError(
+        'SKU already exists for this museum',
+        'duplicate_sku'
+      );
+    }
+  }
+
+  const [created] = await db
+    .insert(souvenirProducts)
+    .values({
+      museumId,
+      name: data.name,
+      description: data.description ?? null,
+      sku: data.sku ?? null,
+      price: data.price,
+      currency: 'VND',
+      stockQuantity: data.stock_quantity ?? 0,
+      status: data.status ?? 'draft',
+      createdBy: userId,
+    })
+    .returning(publicSouvenirProductFields);
+
+  return created;
+}
+
+/** Updates a souvenir product. First queries product to get museum_id, then checks permissions. */
+export async function updateAdminProduct(
+  userId: string,
+  productId: string,
+  data: PatchProductBody
+): Promise<PublicSouvenirProductItem> {
+  const [product] = await db
+    .select(publicSouvenirProductFields)
+    .from(souvenirProducts)
+    .where(eq(souvenirProducts.id, productId))
+    .limit(1);
+
+  if (!product) {
+    throw new NotFoundError('Product not found');
+  }
+
+  const allowed = await canManageMuseum(userId, product.museum_id);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  if (
+    data.sku !== undefined &&
+    data.sku !== null &&
+    data.sku !== product.sku
+  ) {
+    const [conflict] = await db
+      .select({ id: souvenirProducts.id })
+      .from(souvenirProducts)
+      .where(
+        and(
+          eq(souvenirProducts.museumId, product.museum_id),
+          eq(souvenirProducts.sku, data.sku),
+          ne(souvenirProducts.id, productId)
+        )
+      )
+      .limit(1);
+
+    if (conflict) {
+      throw new ConflictError(
+        'SKU already exists for this museum',
+        'duplicate_sku'
+      );
+    }
+  }
+
+  const updateValues: Record<string, unknown> = {
+    updatedAt: new Date(),
+  };
+
+  if (data.name !== undefined) updateValues.name = data.name;
+  if (data.description !== undefined) updateValues.description = data.description;
+  if (data.sku !== undefined) updateValues.sku = data.sku;
+  if (data.price !== undefined) updateValues.price = data.price;
+  if (data.stock_quantity !== undefined) updateValues.stockQuantity = data.stock_quantity;
+  if (data.status !== undefined) updateValues.status = data.status;
+
+  const [updated] = await db
+    .update(souvenirProducts)
+    .set(updateValues)
+    .where(eq(souvenirProducts.id, productId))
+    .returning(publicSouvenirProductFields);
+
+  return updated;
+}
+
+/** Lists all ticket types of a museum regardless of availability for an authorized admin. */
+export async function listAdminMuseumTicketTypes(
+  userId: string,
+  museumId: string,
+  limit: number,
+  offset: number
+): Promise<ListPublicTicketTypesResult> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const whereCondition = eq(ticketTypes.museumId, museumId);
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(ticketTypes)
+    .where(whereCondition);
+
+  const rows = await db
+    .select(publicTicketTypeFields)
+    .from(ticketTypes)
+    .where(whereCondition)
+    .orderBy(desc(ticketTypes.createdAt), asc(ticketTypes.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    ticket_types: rows,
+    total: Number(total),
+  };
+}
+
+/** Creates a ticket type in a museum. Caller must manage the museum. */
+export async function createAdminMuseumTicketType(
+  userId: string,
+  museumId: string,
+  data: CreateTicketTypeBody
+): Promise<PublicTicketTypeItem> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const [created] = await db
+    .insert(ticketTypes)
+    .values({
+      museumId,
+      name: data.name,
+      description: data.description ?? null,
+      price: data.price,
+      currency: 'VND',
+      isAvailable: data.is_available ?? true,
+    })
+    .returning(publicTicketTypeFields);
+
+  return created;
+}
+
+/** Updates a ticket type. First queries ticket type to get museum_id, then checks permissions. */
+export async function updateAdminTicketType(
+  userId: string,
+  ticketTypeId: string,
+  data: PatchTicketTypeBody
+): Promise<PublicTicketTypeItem> {
+  const [type] = await db
+    .select(publicTicketTypeFields)
+    .from(ticketTypes)
+    .where(eq(ticketTypes.id, ticketTypeId))
+    .limit(1);
+
+  if (!type) {
+    throw new NotFoundError('Ticket type not found');
+  }
+
+  const allowed = await canManageMuseum(userId, type.museum_id);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const updateValues: Record<string, unknown> = {
+    updatedAt: new Date(),
+  };
+
+  if (data.name !== undefined) updateValues.name = data.name;
+  if (data.description !== undefined) updateValues.description = data.description;
+  if (data.price !== undefined) updateValues.price = data.price;
+  if (data.is_available !== undefined) updateValues.isAvailable = data.is_available;
+
+  const [updated] = await db
+    .update(ticketTypes)
+    .set(updateValues)
+    .where(eq(ticketTypes.id, ticketTypeId))
+    .returning(publicTicketTypeFields);
+
+  return updated;
+}
+
 
 
 

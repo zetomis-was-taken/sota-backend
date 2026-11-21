@@ -271,6 +271,80 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
             };
           }
 
+          if (tableName === 'souvenir_products') {
+            const newProduct: SouvenirProductRecord = {
+              id:
+                val.id ??
+                `p1111111-1111-4111-8111-${Math.floor(
+                  100000000000 + Math.random() * 900000000000
+                )}`,
+              museumId: val.museumId,
+              name: val.name,
+              description: val.description ?? null,
+              sku: val.sku ?? null,
+              price: val.price,
+              currency: val.currency ?? 'VND',
+              stockQuantity: val.stockQuantity ?? 0,
+              status: val.status ?? 'draft',
+              createdBy: val.createdBy ?? null,
+              createdAt: now,
+              updatedAt: now,
+            };
+            mockState.souvenirProducts.push(newProduct);
+            return {
+              returning: vi.fn(async () => [
+                {
+                  id: newProduct.id,
+                  museum_id: newProduct.museumId,
+                  name: newProduct.name,
+                  description: newProduct.description,
+                  sku: newProduct.sku,
+                  price: newProduct.price,
+                  currency: newProduct.currency,
+                  stock_quantity: newProduct.stockQuantity,
+                  status: newProduct.status,
+                  created_by: newProduct.createdBy,
+                  created_at: newProduct.createdAt,
+                  updated_at: newProduct.updatedAt,
+                },
+              ]),
+            };
+          }
+
+          if (tableName === 'ticket_types') {
+            const newTicketType: TicketTypeRecord = {
+              id:
+                val.id ??
+                `t1111111-1111-4111-8111-${Math.floor(
+                  100000000000 + Math.random() * 900000000000
+                )}`,
+              museumId: val.museumId,
+              name: val.name,
+              description: val.description ?? null,
+              price: val.price,
+              currency: val.currency ?? 'VND',
+              isAvailable: val.isAvailable ?? true,
+              createdAt: now,
+              updatedAt: now,
+            };
+            mockState.ticketTypes.push(newTicketType);
+            return {
+              returning: vi.fn(async () => [
+                {
+                  id: newTicketType.id,
+                  museum_id: newTicketType.museumId,
+                  name: newTicketType.name,
+                  description: newTicketType.description,
+                  price: newTicketType.price,
+                  currency: newTicketType.currency,
+                  is_available: newTicketType.isAvailable,
+                  created_at: newTicketType.createdAt,
+                  updated_at: newTicketType.updatedAt,
+                },
+              ]),
+            };
+          }
+
           const newMuseum: MuseumRecord = {
             id:
               val.id ??
@@ -355,6 +429,74 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
                       created_by: a.createdBy,
                       created_at: a.createdAt,
                       updated_at: a.updatedAt,
+                    },
+                  ];
+                }),
+              };
+            }
+
+            if (tableName === 'souvenir_products') {
+              const p = mockState.souvenirProducts.find((item) => item.id === targetId);
+              return {
+                returning: vi.fn(async () => {
+                  if (!p) return [];
+                  if (values.name !== undefined) p.name = values.name as string;
+                  if (values.description !== undefined)
+                    p.description = values.description as string | null;
+                  if (values.sku !== undefined)
+                    p.sku = values.sku as string | null;
+                  if (values.price !== undefined)
+                    p.price = values.price as string;
+                  if (values.stockQuantity !== undefined)
+                    p.stockQuantity = values.stockQuantity as number;
+                  if (values.status !== undefined) p.status = values.status as any;
+                  if (values.updatedAt instanceof Date)
+                    p.updatedAt = values.updatedAt;
+                  return [
+                    {
+                      id: p.id,
+                      museum_id: p.museumId,
+                      name: p.name,
+                      description: p.description,
+                      sku: p.sku,
+                      price: p.price,
+                      currency: p.currency,
+                      stock_quantity: p.stockQuantity,
+                      status: p.status,
+                      created_by: p.createdBy,
+                      created_at: p.createdAt,
+                      updated_at: p.updatedAt,
+                    },
+                  ];
+                }),
+              };
+            }
+
+            if (tableName === 'ticket_types') {
+              const t = mockState.ticketTypes.find((item) => item.id === targetId);
+              return {
+                returning: vi.fn(async () => {
+                  if (!t) return [];
+                  if (values.name !== undefined) t.name = values.name as string;
+                  if (values.description !== undefined)
+                    t.description = values.description as string | null;
+                  if (values.price !== undefined)
+                    t.price = values.price as string;
+                  if (values.isAvailable !== undefined)
+                    t.isAvailable = values.isAvailable as boolean;
+                  if (values.updatedAt instanceof Date)
+                    t.updatedAt = values.updatedAt;
+                  return [
+                    {
+                      id: t.id,
+                      museum_id: t.museumId,
+                      name: t.name,
+                      description: t.description,
+                      price: t.price,
+                      currency: t.currency,
+                      is_available: t.isAvailable,
+                      created_at: t.createdAt,
+                      updated_at: t.updatedAt,
                     },
                   ];
                 }),
@@ -490,9 +632,11 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
               rows = rows.filter((a) => a.inventory_code === targetInvCode);
             }
           } else if (activeTable === 'souvenir_products') {
-            if (options.filters.eq.museum_id) {
+            const targetMuseumId =
+              options.filters.eq.museum_id ?? options.filters.eq.museumId;
+            if (targetMuseumId) {
               rows = rows.filter(
-                (p) => p.museum_id === options.filters.eq.museum_id
+                (p) => p.museum_id === targetMuseumId
               );
             }
             if (options.filters.eq.status) {
@@ -503,19 +647,33 @@ const { mockGetUser, mockState, mockDb } = vi.hoisted(() => {
             if (options.filters.eq.id) {
               rows = rows.filter((p) => p.id === options.filters.eq.id);
             }
+            if (options.filters.ne.id) {
+              rows = rows.filter((p) => p.id !== options.filters.ne.id);
+            }
+            if (options.filters.eq.sku !== undefined) {
+              rows = rows.filter((p) => p.sku === options.filters.eq.sku);
+            }
           } else if (activeTable === 'ticket_types') {
-            if (options.filters.eq.museum_id) {
+            const targetMuseumId =
+              options.filters.eq.museum_id ?? options.filters.eq.museumId;
+            if (targetMuseumId) {
               rows = rows.filter(
-                (t) => t.museum_id === options.filters.eq.museum_id
+                (t) => t.museum_id === targetMuseumId
               );
             }
-            if (options.filters.eq.is_available !== undefined) {
+            const isAvail =
+              options.filters.eq.is_available ??
+              options.filters.eq.isAvailable;
+            if (isAvail !== undefined) {
               rows = rows.filter(
-                (t) => t.is_available === options.filters.eq.is_available
+                (t) => t.is_available === isAvail
               );
             }
             if (options.filters.eq.id) {
               rows = rows.filter((t) => t.id === options.filters.eq.id);
+            }
+            if (options.filters.ne.id) {
+              rows = rows.filter((t) => t.id !== options.filters.ne.id);
             }
           } else if (activeTable === 'media_assets') {
             if (options.filters.eq.museum_id) {
@@ -2541,6 +2699,303 @@ describe('Phase 2 — Catalog Public Reads', () => {
       });
     });
   });
+
+  describe('Phase 2.6 — Public & Admin: Souvenir Products', () => {
+    const museumId = '11111111-1111-4111-8111-111111111111';
+    const draftMuseumId = '22222222-2222-4222-8222-222222222222';
+    const otherMuseumId = '33333333-3333-4333-8333-333333333333';
+    const productId1 = 'ca111111-1111-4111-8111-111111111111';
+    const productId2 = 'ca222222-2222-4222-8222-222222222222';
+    const productInDraftId = 'ca333333-3333-4333-8333-333333333333';
+
+    beforeEach(() => {
+      mockState.museums.push(
+        fakeMuseum({ id: museumId, name: 'Louvre', slug: 'louvre', status: 'published' }),
+        fakeMuseum({ id: draftMuseumId, name: 'Draft Museum', slug: 'draft-museum', status: 'draft' }),
+        fakeMuseum({ id: otherMuseumId, name: 'Other Museum', slug: 'other-museum', status: 'published' })
+      );
+
+      mockState.souvenirProducts.push(
+        fakeProduct({
+          id: productId1,
+          museumId,
+          name: 'Mona Lisa Magnet',
+          sku: 'SKU-MAG-01',
+          price: '50000.00',
+          stockQuantity: 100,
+          status: 'published',
+        }),
+        fakeProduct({
+          id: productId2,
+          museumId,
+          name: 'Draft Postcard',
+          sku: 'SKU-CARD-01',
+          price: '20000.00',
+          stockQuantity: 50,
+          status: 'draft',
+        }),
+        fakeProduct({
+          id: productInDraftId,
+          museumId: draftMuseumId,
+          name: 'Published Product in Draft Museum',
+          sku: 'SKU-DRAFT-M',
+          price: '30000.00',
+          stockQuantity: 10,
+          status: 'published',
+        })
+      );
+    });
+
+    describe('GET /api/v1/museums/:museumId/products', () => {
+      it('returns 404 when museum does not exist or is not published', async () => {
+        const notFound = await request(app).get('/api/v1/museums/99999999-9999-4999-8999-999999999999/products');
+        expect(notFound.status).toBe(404);
+
+        const draftRes = await request(app).get(`/api/v1/museums/${draftMuseumId}/products`);
+        expect(draftRes.status).toBe(404);
+      });
+
+      it('returns only published products for published museum', async () => {
+        const res = await request(app).get(`/api/v1/museums/${museumId}/products`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toHaveLength(1);
+        expect(res.body.data[0].id).toBe(productId1);
+        expect(res.body.pagination.total).toBe(1);
+      });
+    });
+
+    describe('GET /api/v1/products/:id', () => {
+      it('returns 404 when product does not exist or is not published', async () => {
+        const notFound = await request(app).get('/api/v1/products/99999999-9999-4999-8999-999999999999');
+        expect(notFound.status).toBe(404);
+
+        const draftProd = await request(app).get(`/api/v1/products/${productId2}`);
+        expect(draftProd.status).toBe(404);
+      });
+
+      it('returns 404 when product is published but parent museum is draft', async () => {
+        const res = await request(app).get(`/api/v1/products/${productInDraftId}`);
+        expect(res.status).toBe(404);
+      });
+
+      it('returns 200 with product details when published and museum is published', async () => {
+        const res = await request(app).get(`/api/v1/products/${productId1}`);
+        expect(res.status).toBe(200);
+        expect(res.body.data.name).toBe('Mona Lisa Magnet');
+        expect(res.body.data.price).toBe('50000.00');
+        expect(res.body.data.stock_quantity).toBe(100);
+      });
+    });
+
+    describe('Admin Products: GET, POST, PATCH', () => {
+      it('GET /api/v1/admin/museums/:museumId/products returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app).get(`/api/v1/admin/museums/${museumId}/products`);
+        expect(anonRes.status).toBe(401);
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/products`)
+          .set('Authorization', 'Bearer normal-token');
+        expect(normalRes.status).toBe(403);
+      });
+
+      it('GET /api/v1/admin/museums/:museumId/products returns all products for authorized admin', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/products`)
+          .set('Authorization', 'Bearer admin-token');
+        expect(res.status).toBe(200);
+        expect(res.body.data).toHaveLength(2); // published + draft
+        expect(res.body.pagination.total).toBe(2);
+      });
+
+      it('POST /api/v1/admin/museums/:museumId/products creates product for authorized admin', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/products`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Louvre Scarf',
+            description: 'Silk scarf',
+            sku: 'SKU-SCARF-01',
+            price: '250000.00',
+            stock_quantity: 20,
+            status: 'draft',
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.name).toBe('Louvre Scarf');
+        expect(res.body.data.price).toBe('250000.00');
+        expect(res.body.data.stock_quantity).toBe(20);
+      });
+
+      it('POST /api/v1/admin/museums/:museumId/products returns 409 on duplicate SKU in same museum', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/products`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Another Magnet',
+            sku: 'SKU-MAG-01', // already used in museumId
+            price: '60000.00',
+          });
+
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('duplicate_sku');
+      });
+
+      it('PATCH /api/v1/admin/products/:id updates price and restocks product', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/products/${productId1}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            price: '55000.00',
+            stock_quantity: 150,
+            status: 'published',
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.price).toBe('55000.00');
+        expect(res.body.data.stock_quantity).toBe(150);
+      });
+
+      it('PATCH /api/v1/admin/products/:id returns 409 on SKU conflict', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/products/${productId2}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            sku: 'SKU-MAG-01', // conflict with productId1
+          });
+
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('duplicate_sku');
+      });
+    });
+  });
+
+  describe('Phase 2.7 — Public & Admin: Ticket Types', () => {
+    const museumId = '11111111-1111-4111-8111-111111111111';
+    const draftMuseumId = '22222222-2222-4222-8222-222222222222';
+    const ticketTypeId1 = 'ba111111-1111-4111-8111-111111111111';
+    const ticketTypeId2 = 'ba222222-2222-4222-8222-222222222222';
+
+    beforeEach(() => {
+      mockState.museums.push(
+        fakeMuseum({ id: museumId, name: 'Louvre', slug: 'louvre', status: 'published' }),
+        fakeMuseum({ id: draftMuseumId, name: 'Draft Museum', slug: 'draft-museum', status: 'draft' })
+      );
+
+      mockState.ticketTypes.push(
+        fakeTicketType({
+          id: ticketTypeId1,
+          museumId,
+          name: 'Adult Standard',
+          price: '200000.00',
+          isAvailable: true,
+        }),
+        fakeTicketType({
+          id: ticketTypeId2,
+          museumId,
+          name: 'VIP Guided Tour',
+          price: '500000.00',
+          isAvailable: false,
+        }),
+        fakeTicketType({
+          id: 'ba333333-3333-4333-8333-333333333333',
+          museumId: draftMuseumId,
+          name: 'Draft Museum Ticket',
+          price: '100000.00',
+          isAvailable: true,
+        })
+      );
+    });
+
+    describe('GET /api/v1/museums/:museumId/ticket-types', () => {
+      it('returns 404 when museum does not exist or is not published', async () => {
+        const notFound = await request(app).get('/api/v1/museums/99999999-9999-4999-8999-999999999999/ticket-types');
+        expect(notFound.status).toBe(404);
+
+        const draftRes = await request(app).get(`/api/v1/museums/${draftMuseumId}/ticket-types`);
+        expect(draftRes.status).toBe(404);
+      });
+
+      it('returns only available ticket types for published museum', async () => {
+        const res = await request(app).get(`/api/v1/museums/${museumId}/ticket-types`);
+        expect(res.status).toBe(200);
+        expect(res.body.data).toHaveLength(1);
+        expect(res.body.data[0].id).toBe(ticketTypeId1);
+        expect(res.body.data[0].is_available).toBe(true);
+        expect(res.body.pagination.total).toBe(1);
+      });
+    });
+
+    describe('Admin Ticket Types: GET, POST, PATCH', () => {
+      it('GET /api/v1/admin/museums/:museumId/ticket-types returns 401 for anon and 403 for normal_user', async () => {
+        const anonRes = await request(app).get(`/api/v1/admin/museums/${museumId}/ticket-types`);
+        expect(anonRes.status).toBe(401);
+
+        authAsNormalUser();
+        const normalRes = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/ticket-types`)
+          .set('Authorization', 'Bearer normal-token');
+        expect(normalRes.status).toBe(403);
+      });
+
+      it('GET /api/v1/admin/museums/:museumId/ticket-types returns all types including unavailable', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .get(`/api/v1/admin/museums/${museumId}/ticket-types`)
+          .set('Authorization', 'Bearer admin-token');
+        expect(res.status).toBe(200);
+        expect(res.body.data).toHaveLength(2); // available + unavailable
+        expect(res.body.pagination.total).toBe(2);
+      });
+
+      it('POST /api/v1/admin/museums/:museumId/ticket-types creates ticket type', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .post(`/api/v1/admin/museums/${museumId}/ticket-types`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            name: 'Student Ticket',
+            description: 'Valid ID required',
+            price: '100000.00',
+            is_available: true,
+          });
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.name).toBe('Student Ticket');
+        expect(res.body.data.price).toBe('100000.00');
+        expect(res.body.data.is_available).toBe(true);
+      });
+
+      it('PATCH /api/v1/admin/ticket-types/:id updates price and availability', async () => {
+        authAsAdminUser(adminUserId, [{ museumId, status: 'active' }]);
+
+        const res = await request(app)
+          .patch(`/api/v1/admin/ticket-types/${ticketTypeId2}`)
+          .set('Authorization', 'Bearer admin-token')
+          .send({
+            price: '450000.00',
+            is_available: true,
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.price).toBe('450000.00');
+        expect(res.body.data.is_available).toBe(true);
+      });
+    });
+  });
 });
+
 
 

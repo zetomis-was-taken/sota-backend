@@ -148,3 +148,76 @@ export const patchArtifactBodySchema = z
   );
 
 export type PatchArtifactBody = z.infer<typeof patchArtifactBodySchema>;
+
+export const moneyStringSchema = z
+  .union([
+    z
+      .string()
+      .trim()
+      .regex(/^(0|[1-9]\d*)(\.(\d{1,2}))?$/, 'Invalid price format'),
+    z.number().nonnegative('Price cannot be negative').finite(),
+  ])
+  .transform((val) => {
+    if (typeof val === 'number') {
+      return val.toFixed(2);
+    }
+    const [intPart, decPart = ''] = val.split('.');
+    return `${intPart}.${decPart.padEnd(2, '0')}`;
+  });
+
+export const createProductBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    description: z.string().trim().nullable().optional(),
+    sku: z.string().trim().nullable().optional(),
+    price: moneyStringSchema,
+    stock_quantity: nonNegativeIntSchema.optional().default(0),
+    status: z.enum(['draft', 'published', 'archived']).optional().default('draft'),
+  })
+  .strict();
+
+export type CreateProductBody = z.infer<typeof createProductBodySchema>;
+
+export const patchProductBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    sku: z.string().trim().nullable().optional(),
+    price: moneyStringSchema.optional(),
+    stock_quantity: nonNegativeIntSchema.optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchProductBody = z.infer<typeof patchProductBodySchema>;
+
+export const createTicketTypeBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name is required'),
+    description: z.string().trim().nullable().optional(),
+    price: moneyStringSchema,
+    is_available: z.boolean().optional().default(true),
+  })
+  .strict();
+
+export type CreateTicketTypeBody = z.infer<typeof createTicketTypeBodySchema>;
+
+export const patchTicketTypeBodySchema = z
+  .object({
+    name: z.string().trim().min(1, 'Name cannot be empty').optional(),
+    description: z.string().trim().nullable().optional(),
+    price: moneyStringSchema.optional(),
+    is_available: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    'At least one field must be provided to update'
+  );
+
+export type PatchTicketTypeBody = z.infer<typeof patchTicketTypeBodySchema>;
+
