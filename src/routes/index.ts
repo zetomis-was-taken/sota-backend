@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { cartsRouter } from './carts';
 import { catalogRouter } from './catalog';
 import { meRouter } from './me';
 import { mediaRouter } from './media';
@@ -13,3 +14,4 @@ apiV1Router.use(catalogRouter);
 apiV1Router.use(mediaRouter);
 apiV1Router.use(ticketOrdersRouter);
 apiV1Router.use(shopOrdersRouter);
+apiV1Router.use(cartsRouter);
