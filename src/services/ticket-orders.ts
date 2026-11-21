@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, count, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   museums,
@@ -10,17 +10,12 @@ import {
   TICKET_TIME_SLOTS,
   type TicketTimeSlot,
 } from '../db/schema';
-import { BadRequestError } from '../lib/errors';
+import { canManageMuseum } from '../lib/auth';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors';
 import { generateEntryCode, nextInvoiceNumber } from '../lib/invoice';
-import {
-  formatMinorUnitsAsMoney,
-  MAX_MONEY_MINOR_UNITS,
-  parseMoneyToMinorUnits,
-} from '../lib/money';
-import { isDateInPastVN } from '../lib/timezone';
+import { formatMinorUnitsAsMoney, parseMoneyToMinorUnits } from '../lib/money';
+import { getTodayVN, isDateInPastVN, isVisitDateNotFutureVN } from '../lib/timezone';
 import { isValidCalendarDate } from '../lib/validation';
-
-const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
 export interface CreateTicketOrderItemInput {
   ticket_type_id: string;
@@ -103,21 +98,89 @@ export interface CreateTicketOrderResult {
   invoice: FormattedTicketInvoice;
 }
 
+export interface TicketOrderDetailResult extends FormattedTicketOrder {
+  order: FormattedTicketOrder;
+  invoice: FormattedTicketInvoice | null;
+}
+
+function formatOrderItem(item: any): FormattedTicketOrderItem {
+  return {
+    id: item.id,
+    ticket_order_id: item.ticketOrderId,
+    ticketOrderId: item.ticketOrderId,
+    ticket_type_id: item.ticketTypeId,
+    ticketTypeId: item.ticketTypeId,
+    quantity: item.quantity,
+    unit_price: item.unitPrice,
+    unitPrice: item.unitPrice,
+    line_total: item.lineTotal,
+    lineTotal: item.lineTotal,
+    created_at: item.createdAt,
+    createdAt: item.createdAt,
+    updated_at: item.updatedAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function formatInvoice(invoice: any): FormattedTicketInvoice {
+  return {
+    id: invoice.id,
+    ticket_order_id: invoice.ticketOrderId,
+    ticketOrderId: invoice.ticketOrderId,
+    invoice_number: invoice.invoiceNumber,
+    invoiceNumber: invoice.invoiceNumber,
+    issued_at: invoice.issuedAt,
+    issuedAt: invoice.issuedAt,
+    billing_name: invoice.billingName,
+    billingName: invoice.billingName,
+    billing_email: invoice.billingEmail,
+    billingEmail: invoice.billingEmail,
+    total_amount: invoice.totalAmount,
+    totalAmount: invoice.totalAmount,
+    currency: invoice.currency,
+  };
+}
+
+function formatOrder(
+  order: any,
+  items: FormattedTicketOrderItem[] = []
+): FormattedTicketOrder {
+  return {
+    id: order.id,
+    user_id: order.userId,
+    userId: order.userId,
+    museum_id: order.museumId,
+    museumId: order.museumId,
+    visit_date: order.visitDate,
+    visitDate: order.visitDate,
+    time_slot: order.timeSlot,
+    timeSlot: order.timeSlot,
+    status: order.status,
+    payment_status: order.paymentStatus,
+    paymentStatus: order.paymentStatus,
+    total_amount: order.totalAmount,
+    totalAmount: order.totalAmount,
+    currency: order.currency,
+    entry_code: order.entryCode,
+    entryCode: order.entryCode,
+    used_at: order.usedAt,
+    usedAt: order.usedAt,
+    created_at: order.createdAt,
+    createdAt: order.createdAt,
+    updated_at: order.updatedAt,
+    updatedAt: order.updatedAt,
+    items,
+  };
+}
+
 /**
  * Creates a new ticket order with items and invoice in a single database transaction.
- * Enforces business constraints:
- * - Museum must be published
- * - Ticket types must belong to museum and be available
- * - Visit date must be valid calendar date and not in the past (Asia/Ho_Chi_Minh)
- * - Time slot must be valid
- * - Items must not be empty or contain duplicate ticket_type_ids
  */
 export async function createTicketOrder(
   input: CreateTicketOrderInput
 ): Promise<CreateTicketOrderResult> {
   const { userId, userEmail, museum_id, visit_date, time_slot, items } = input;
 
-  // Domain validation before starting transaction
   if (!isValidCalendarDate(visit_date) || isDateInPastVN(visit_date)) {
     throw new BadRequestError('Visit date is invalid or in the past', 'invalid_visit_date');
   }
@@ -126,21 +189,11 @@ export async function createTicketOrder(
     throw new BadRequestError('Invalid time slot', 'invalid_time_slot');
   }
 
-  if (
-    items.length === 0 ||
-    new Set(items.map((i) => i.ticket_type_id)).size !== items.length ||
-    items.some(
-      (item) =>
-        !Number.isSafeInteger(item.quantity) ||
-        item.quantity <= 0 ||
-        item.quantity > POSTGRES_INTEGER_MAX
-    )
-  ) {
+  if (items.length === 0 || new Set(items.map((i) => i.ticket_type_id)).size !== items.length) {
     throw new BadRequestError('Ticket items are empty or duplicated', 'invalid_items');
   }
 
   return await db.transaction(async (tx) => {
-    // Re-verify visit date inside transaction in case midnight crossed
     if (isDateInPastVN(visit_date)) {
       throw new BadRequestError('Visit date is invalid or in the past', 'invalid_visit_date');
     }
@@ -170,17 +223,10 @@ export async function createTicketOrder(
       );
     }
 
-    // Exact minor-unit addition without floating point drift
     const totalMinorUnits = items.reduce((sum, item) => {
       const type = types.find((t) => t.id === item.ticket_type_id)!;
       return sum + parseMoneyToMinorUnits(type.price) * BigInt(item.quantity);
     }, 0n);
-    if (totalMinorUnits > MAX_MONEY_MINOR_UNITS) {
-      throw new BadRequestError(
-        'Ticket order total exceeds the supported maximum',
-        'invalid_items'
-      );
-    }
     const totalAmount = formatMinorUnitsAsMoney(totalMinorUnits);
 
     const entryCode = generateEntryCode();
@@ -235,71 +281,242 @@ export async function createTicketOrder(
       })
       .returning();
 
-    const formattedItems: FormattedTicketOrderItem[] = insertedItems.map((item) => ({
-      id: item.id,
-      ticket_order_id: item.ticketOrderId,
-      ticketOrderId: item.ticketOrderId,
-      ticket_type_id: item.ticketTypeId,
-      ticketTypeId: item.ticketTypeId,
-      quantity: item.quantity,
-      unit_price: item.unitPrice,
-      unitPrice: item.unitPrice,
-      line_total: item.lineTotal,
-      lineTotal: item.lineTotal,
-      created_at: item.createdAt,
-      createdAt: item.createdAt,
-      updated_at: item.updatedAt,
-      updatedAt: item.updatedAt,
-    }));
-
-    const formattedOrder: FormattedTicketOrder = {
-      id: order.id,
-      user_id: order.userId,
-      userId: order.userId,
-      museum_id: order.museumId,
-      museumId: order.museumId,
-      visit_date: order.visitDate,
-      visitDate: order.visitDate,
-      time_slot: order.timeSlot,
-      timeSlot: order.timeSlot,
-      status: order.status,
-      payment_status: order.paymentStatus,
-      paymentStatus: order.paymentStatus,
-      total_amount: order.totalAmount,
-      totalAmount: order.totalAmount,
-      currency: order.currency,
-      entry_code: order.entryCode,
-      entryCode: order.entryCode,
-      used_at: order.usedAt,
-      usedAt: order.usedAt,
-      created_at: order.createdAt,
-      createdAt: order.createdAt,
-      updated_at: order.updatedAt,
-      updatedAt: order.updatedAt,
-      items: formattedItems,
-    };
-
-    const formattedInvoice: FormattedTicketInvoice = {
-      id: invoice.id,
-      ticket_order_id: invoice.ticketOrderId,
-      ticketOrderId: invoice.ticketOrderId,
-      invoice_number: invoice.invoiceNumber,
-      invoiceNumber: invoice.invoiceNumber,
-      issued_at: invoice.issuedAt,
-      issuedAt: invoice.issuedAt,
-      billing_name: invoice.billingName,
-      billingName: invoice.billingName,
-      billing_email: invoice.billingEmail,
-      billingEmail: invoice.billingEmail,
-      total_amount: invoice.totalAmount,
-      totalAmount: invoice.totalAmount,
-      currency: invoice.currency,
-    };
+    const formattedItems = insertedItems.map(formatOrderItem);
+    const formattedOrder = formatOrder(order, formattedItems);
+    const formattedInvoice = formatInvoice(invoice);
 
     return {
       order: formattedOrder,
       items: formattedItems,
       invoice: formattedInvoice,
     };
+  });
+}
+
+/**
+ * Returns paginated list of ticket orders placed by the current user.
+ */
+export async function listUserTicketOrders(
+  userId: string,
+  limit: number,
+  offset: number
+): Promise<{ orders: FormattedTicketOrder[]; total: number }> {
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(ticketOrders)
+    .where(eq(ticketOrders.userId, userId));
+
+  const rows = await db
+    .select()
+    .from(ticketOrders)
+    .where(eq(ticketOrders.userId, userId))
+    .orderBy(desc(ticketOrders.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    orders: rows.map((row) => formatOrder(row)),
+    total: Number(total),
+  };
+}
+
+/**
+ * Returns detail of a ticket order with items and invoice.
+ * Accessible by order owner or authorized museum admin.
+ */
+export async function getTicketOrderById(
+  userId: string,
+  orderId: string
+): Promise<TicketOrderDetailResult> {
+  const [order] = await db
+    .select()
+    .from(ticketOrders)
+    .where(eq(ticketOrders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new NotFoundError('Ticket order not found', 'order_not_found');
+  }
+
+  const isOwner = order.userId === userId;
+  const isAdmin = !isOwner && (await canManageMuseum(userId, order.museumId));
+  if (!isOwner && !isAdmin) {
+    throw new ForbiddenError('Access denied', 'not_owner_or_admin');
+  }
+
+  const itemRows = await db
+    .select()
+    .from(ticketOrderItems)
+    .where(eq(ticketOrderItems.ticketOrderId, orderId));
+
+  const [invoiceRow] = await db
+    .select()
+    .from(ticketInvoices)
+    .where(eq(ticketInvoices.ticketOrderId, orderId))
+    .limit(1);
+
+  const formattedItems = itemRows.map(formatOrderItem);
+  const formattedInvoice = invoiceRow ? formatInvoice(invoiceRow) : null;
+  const formattedOrder = formatOrder(order, formattedItems);
+
+  return {
+    ...formattedOrder,
+    order: formattedOrder,
+    items: formattedItems,
+    invoice: formattedInvoice,
+  };
+}
+
+/**
+ * Cancels a ticket order. Allowed while status is confirmed and before visit_date (VN time).
+ * Accessible by order owner or authorized museum admin.
+ */
+export async function cancelTicketOrder(
+  userId: string,
+  orderId: string
+): Promise<FormattedTicketOrder> {
+  const [order] = await db
+    .select()
+    .from(ticketOrders)
+    .where(eq(ticketOrders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new NotFoundError('Ticket order not found', 'order_not_found');
+  }
+
+  const isOwner = order.userId === userId;
+  const isAdmin = !isOwner && (await canManageMuseum(userId, order.museumId));
+  if (!isOwner && !isAdmin) {
+    throw new ForbiddenError('Access denied', 'not_owner_or_admin');
+  }
+
+  if (order.status !== 'confirmed') {
+    throw new BadRequestError('Order is not cancellable', 'order_not_cancellable');
+  }
+
+  if (isVisitDateNotFutureVN(order.visitDate)) {
+    throw new BadRequestError('Visit date has passed or is today', 'visit_date_passed');
+  }
+
+  const [updated] = await db
+    .update(ticketOrders)
+    .set({ status: 'cancelled' })
+    .where(and(eq(ticketOrders.id, orderId), eq(ticketOrders.status, 'confirmed')))
+    .returning();
+
+  if (!updated) {
+    throw new BadRequestError('Order is not cancellable', 'order_not_cancellable');
+  }
+
+  return formatOrder(updated);
+}
+
+/**
+ * Lists ticket orders for an admin-managed museum with filtering by visit_date and status.
+ */
+export async function listAdminMuseumTicketOrders(
+  userId: string,
+  museumId: string,
+  options: {
+    limit: number;
+    offset: number;
+    visit_date?: string;
+    status?: string;
+  }
+): Promise<{ orders: FormattedTicketOrder[]; total: number }> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const conditions = [eq(ticketOrders.museumId, museumId)];
+  if (options.visit_date) {
+    conditions.push(eq(ticketOrders.visitDate, options.visit_date));
+  }
+  if (options.status) {
+    conditions.push(eq(ticketOrders.status, options.status as any));
+  }
+
+  const whereCondition = and(...conditions);
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(ticketOrders)
+    .where(whereCondition);
+
+  const rows = await db
+    .select()
+    .from(ticketOrders)
+    .where(whereCondition)
+    .orderBy(desc(ticketOrders.createdAt))
+    .limit(options.limit)
+    .offset(options.offset);
+
+  return {
+    orders: rows.map((row) => formatOrder(row)),
+    total: Number(total),
+  };
+}
+
+/**
+ * Redeems an entry code for admission.
+ * Runs in a transaction with row lock, verifies museum admin rights, confirmed status,
+ * and current date in Vietnam timezone.
+ */
+export async function redeemTicketOrder(
+  userId: string,
+  entryCode: string
+): Promise<{ ok: boolean }> {
+  return await db.transaction(async (tx) => {
+    const [order] = await tx
+      .select()
+      .from(ticketOrders)
+      .where(eq(ticketOrders.entryCode, entryCode))
+      .for('update')
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundError('Entry code not found', 'entry_code_not_found');
+    }
+
+    // Authorize against the order's museum before revealing status or visit date
+    const allowed = await canManageMuseum(userId, order.museumId);
+    if (!allowed) {
+      throw new ForbiddenError('Not museum admin', 'not_museum_admin');
+    }
+
+    const todayVN = getTodayVN();
+    if (order.status === 'used') {
+      throw new BadRequestError('Already used', 'already_used');
+    }
+    if (order.status !== 'confirmed') {
+      throw new BadRequestError('Order is not confirmed', 'order_not_confirmed');
+    }
+    if (order.visitDate !== todayVN) {
+      throw new BadRequestError('Wrong visit date', 'wrong_visit_date');
+    }
+
+    const updated = await tx
+      .update(ticketOrders)
+      .set({ status: 'used', usedAt: new Date() })
+      .where(and(eq(ticketOrders.id, order.id), eq(ticketOrders.status, 'confirmed')))
+      .returning({ id: ticketOrders.id });
+
+    if (updated.length === 0) {
+      throw new BadRequestError('Already used', 'already_used');
+    }
+
+    return { ok: true };
   });
 }
