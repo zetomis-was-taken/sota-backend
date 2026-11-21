@@ -21,28 +21,36 @@ const upload = multer({
   limits: { fileSize: MAX_FILE_SIZE },
 });
 
-export const createMediaBodySchema = z.object({
-  museum_id: uuidSchema,
-  entity_type: z.enum(['artifact', 'souvenir']),
-  entity_id: uuidSchema,
-  media_type: z.enum(['image', 'video']),
-  sort_order: z
-    .preprocess((val) => {
-      if (val === undefined || val === null || val === '') return 0;
-      if (typeof val === 'number') return val;
-      const parsed = Number(val);
-      return Number.isInteger(parsed) ? parsed : val;
-    }, z.number().int('sort_order must be an integer').min(0, 'sort_order must be >= 0'))
-    .default(0),
-  is_primary: z
-    .preprocess((val) => {
-      if (val === undefined || val === null || val === '') return false;
-      if (val === 'true' || val === true) return true;
-      if (val === 'false' || val === false) return false;
-      return val;
-    }, z.boolean({ message: 'is_primary must be a boolean' }))
-    .default(false),
-});
+export const createMediaBodySchema = z
+  .object({
+    museum_id: uuidSchema,
+    entity_type: z.enum(['artifact', 'souvenir']),
+    entity_id: uuidSchema,
+    media_type: z.enum(['image', 'video']),
+    sort_order: z
+      .preprocess((val) => {
+        if (val === undefined) return undefined;
+        if (val === null || val === '') return null;
+        if (typeof val === 'number') return val;
+        if (typeof val === 'string') {
+          const trimmed = val.trim();
+          if (trimmed === '') return null;
+          const parsed = Number(trimmed);
+          return Number.isInteger(parsed) ? parsed : val;
+        }
+        return val;
+      }, z.number().int('sort_order must be an integer').min(0, 'sort_order must be >= 0').optional())
+      .default(0),
+    is_primary: z
+      .preprocess((val) => {
+        if (val === undefined) return undefined;
+        if (val === 'true' || val === true) return true;
+        if (val === 'false' || val === false) return false;
+        return val;
+      }, z.boolean({ message: 'is_primary must be a boolean' }).optional())
+      .default(false),
+  })
+  .strict();
 
 export const patchMediaBodySchema = z
   .object({

@@ -681,6 +681,77 @@ describe('Phase 5.2 — Media Endpoints', () => {
         expect.stringContaining(`${museumId}/artifact/${artifactId}/`)
       );
     });
+
+    it('rejects unknown fields in POST body with 400 validation_error', async () => {
+      const res = await request(app)
+        .post('/api/v1/admin/media')
+        .set('Authorization', 'Bearer museum_admin_token')
+        .attach('file', validJpegBuffer, 'photo.jpg')
+        .field('museum_id', museumId)
+        .field('entity_type', 'artifact')
+        .field('entity_id', artifactId)
+        .field('media_type', 'image')
+        .field('unknown_field', 'not_allowed');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    });
+
+    it('rejects negative, non-integer, null, or empty sort_order in POST body', async () => {
+      const negRes = await request(app)
+        .post('/api/v1/admin/media')
+        .set('Authorization', 'Bearer museum_admin_token')
+        .attach('file', validJpegBuffer, 'photo.jpg')
+        .field('museum_id', museumId)
+        .field('entity_type', 'artifact')
+        .field('entity_id', artifactId)
+        .field('media_type', 'image')
+        .field('sort_order', '-1');
+
+      expect(negRes.status).toBe(400);
+      expect(negRes.body.error.code).toBe('validation_error');
+
+      const floatRes = await request(app)
+        .post('/api/v1/admin/media')
+        .set('Authorization', 'Bearer museum_admin_token')
+        .attach('file', validJpegBuffer, 'photo.jpg')
+        .field('museum_id', museumId)
+        .field('entity_type', 'artifact')
+        .field('entity_id', artifactId)
+        .field('media_type', 'image')
+        .field('sort_order', '2.5');
+
+      expect(floatRes.status).toBe(400);
+      expect(floatRes.body.error.code).toBe('validation_error');
+
+      const emptyRes = await request(app)
+        .post('/api/v1/admin/media')
+        .set('Authorization', 'Bearer museum_admin_token')
+        .attach('file', validJpegBuffer, 'photo.jpg')
+        .field('museum_id', museumId)
+        .field('entity_type', 'artifact')
+        .field('entity_id', artifactId)
+        .field('media_type', 'image')
+        .field('sort_order', '');
+
+      expect(emptyRes.status).toBe(400);
+      expect(emptyRes.body.error.code).toBe('validation_error');
+    });
+
+    it('rejects invalid is_primary values in POST body', async () => {
+      const res = await request(app)
+        .post('/api/v1/admin/media')
+        .set('Authorization', 'Bearer museum_admin_token')
+        .attach('file', validJpegBuffer, 'photo.jpg')
+        .field('museum_id', museumId)
+        .field('entity_type', 'artifact')
+        .field('entity_id', artifactId)
+        .field('media_type', 'image')
+        .field('is_primary', 'not_a_boolean');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    });
   });
 
   describe('PATCH /api/v1/admin/media/:id', () => {
