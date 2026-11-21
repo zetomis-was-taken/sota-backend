@@ -71,9 +71,10 @@ describe('storage helper', () => {
       );
     });
 
-    it('throws error when storage upload fails', async () => {
+    it('throws generic error without leaking Supabase internal message', async () => {
+      const originalError = { message: 'Bucket not found: internal_bucket_id' };
       const mockUpload = vi.fn().mockResolvedValue({
-        error: { message: 'Bucket not found' },
+        error: originalError,
       });
       const mockFrom = vi.fn().mockReturnValue({ upload: mockUpload });
       const mockClient = { storage: { from: mockFrom } };
@@ -81,9 +82,15 @@ describe('storage helper', () => {
       setStorageClient(mockClient as any);
 
       const buffer = Buffer.from('fake data');
-      await expect(
-        uploadMedia('museum-media', 'path/to/file.jpg', buffer, 'image/jpeg')
-      ).rejects.toThrow('Storage upload failed: Bucket not found');
+      const promise = uploadMedia('museum-media', 'path/to/file.jpg', buffer, 'image/jpeg');
+
+      await expect(promise).rejects.toThrow('Storage upload failed');
+      await expect(promise).rejects.toSatisfy((err: Error) => {
+        return (
+          err.message === 'Storage upload failed' &&
+          err.cause === originalError
+        );
+      });
     });
 
     it('throws error when storage is not configured', async () => {

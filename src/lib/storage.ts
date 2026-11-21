@@ -55,7 +55,7 @@ export async function uploadMedia(
     .upload(storagePath, buffer, { contentType: mimeType });
 
   if (error) {
-    throw new Error(`Storage upload failed: ${error.message}`);
+    throw new Error('Storage upload failed', { cause: error });
   }
 }
 
