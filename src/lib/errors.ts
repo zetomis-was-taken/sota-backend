@@ -183,12 +183,24 @@ export function normalizeError(err: unknown): AppError {
   if (
     err &&
     typeof err === 'object' &&
-    (err as { type?: unknown }).type === 'entity.too.large'
+    ((err as { type?: unknown }).type === 'entity.too.large' ||
+      (err as { code?: unknown }).code === 'LIMIT_FILE_SIZE')
   ) {
     return new AppError(
       413,
       'payload_too_large',
       'Request payload exceeds size limit'
+    );
+  }
+
+  if (
+    err &&
+    typeof err === 'object' &&
+    (err as { name?: unknown }).name === 'MulterError'
+  ) {
+    return new BadRequestError(
+      (err as { message?: string }).message || 'Invalid file upload',
+      'invalid_upload'
     );
   }
 
