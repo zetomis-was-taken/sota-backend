@@ -66,7 +66,7 @@ erDiagram
 
 **`museum_admins`** — `museum_id` FK `museums(id)` cascade; `user_id` FK `users(id)` cascade; `status` default `active`; `assigned_by` FK `users(id)` set null (nullable); `assigned_at` default `now()`; `revoked_at` (nullable); PK `(museum_id, user_id)`. Re-assignment reuses the row; history is not kept.
 
-**`artifacts`** — `id`; `museum_id` FK `museums(id)` restrict; `name`; `description` (nullable); `period` (nullable); `inventory_code` (nullable); `status` default `draft`; `created_by` FK `users(id)` set null (nullable); timestamps. Partial unique `(museum_id, inventory_code) WHERE inventory_code IS NOT NULL`.
+**`artifacts`** — `id`; `museum_id` FK `museums(id)` restrict; `name`; `description` (nullable); `period` (nullable); `inventory_code` (nullable); `status` default `draft`; `created_by` FK `users(id)` set null (nullable); `source_system` (nullable); `source_id` (nullable); `source_url` (nullable); `source_rights` (nullable); `source_credit` (nullable); timestamps. Partial unique `(museum_id, inventory_code) WHERE inventory_code IS NOT NULL`; partial unique `(source_system, source_id) WHERE source_system IS NOT NULL AND source_id IS NOT NULL`.
 
 **`souvenir_products`** — `id`; `museum_id` FK `museums(id)` restrict; `name`; `description` (nullable); `sku` (nullable); `price` `CHECK (price >= 0)`; `currency`; `stock_quantity` integer default 0 `CHECK (stock_quantity >= 0)`; `status` default `draft`; `created_by` FK `users(id)` set null (nullable); timestamps. Partial unique `(museum_id, sku) WHERE sku IS NOT NULL`.
 
@@ -97,7 +97,7 @@ erDiagram
 
 - FK indexes: `artifacts(museum_id)`, `souvenir_products(museum_id)`, `ticket_types(museum_id)`, `ticket_orders(user_id, created_at desc)`, `ticket_orders(museum_id, visit_date, time_slot, status)`, `ticket_order_items(ticket_order_id)`, `ticket_order_items(ticket_type_id)`, `cart_items(cart_id)`, `cart_items(product_id)`, `shop_orders(user_id, created_at desc)`, `shop_orders(museum_id, created_at desc)`, `shop_order_items(order_id)`, `shop_order_items(product_id)`, `media_assets(museum_id, entity_type, entity_id, sort_order)`, `museum_admins(user_id, status)`.
 - Public catalog: `museums(status, created_at)`, `artifacts(museum_id, status, created_at)`, `souvenir_products(museum_id, status, created_at)`.
-- Partial unique: `carts(user_id, museum_id) WHERE status = 'active'`; `media_assets(entity_type, entity_id) WHERE is_primary`; `artifacts(museum_id, inventory_code) WHERE inventory_code IS NOT NULL`; `souvenir_products(museum_id, sku) WHERE sku IS NOT NULL`.
+- Partial unique: `carts(user_id, museum_id) WHERE status = 'active'`; `media_assets(entity_type, entity_id) WHERE is_primary`; `artifacts(museum_id, inventory_code) WHERE inventory_code IS NOT NULL`; `souvenir_products(museum_id, sku) WHERE sku IS NOT NULL`; `artifacts(source_system, source_id) WHERE source_system IS NOT NULL AND source_id IS NOT NULL`.
 - `ticket_orders.entry_code` is `UNIQUE`; multiple `NULL`s are allowed.
 - Quantities are positive; prices, fees, and totals are non-negative.
 - Status transitions are enforced in Express services, not by CHECKs.

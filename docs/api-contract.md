@@ -29,7 +29,7 @@ Base: `<express-server-origin>/api/v1` (Auth endpoints are on Supabase: `https:/
 ### Data formats & Errors
 
 - IDs are UUIDs; timestamps are ISO 8601 UTC; dates are `YYYY-MM-DD`; money is a decimal string/number in VND (`numeric(12, 2)`).
-- Missing or invalid token → `401`; insufficient role or museum membership → `403`; missing or invisible resource → `404`; unique/FK conflict → `409`; validation or business rule failure → `400`.
+- Missing or invalid token → `401`; insufficient role or museum membership → `403`; missing or invisible resource → `404`; unique/FK conflict → `409`; validation or business rule failure → `400`; payload or file size exceeds limit → `413`.
 - Error shape: `{"error": {"code": "<error_token>", "message": "<human_readable_message>", "details"?: ...}}`. Clients branch on `error.code`, not on `error.message`.
 - Clients never send `user_id`, `created_at`, `updated_at`, `created_by`, generated columns (`line_total`, `total_amount`), `payment_status`, `entry_code`, or `shipping_fee`.
 
@@ -162,7 +162,7 @@ No direct POST/PATCH/DELETE on invoices or order totals.
 
 Buckets `museum-media` and `souvenir-media` are public. Object keys follow `{museum_id}/{entity_type}/{entity_id}/{random_filename}`.
 
-- Admin uploads go through `POST /api/v1/admin/media`, where Express validates museum admin scope, file size, MIME type (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`), and extension before uploading to Supabase Storage (or S3-compatible endpoint) and inserting the `media_assets` row.
+- Admin uploads go through `POST /api/v1/admin/media` (`multipart/form-data`). Maximum file size is 10 MB (files exceeding limit return `413 payload_too_large`). Express validates museum admin scope, file size, binary signature, MIME type (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`), and matching extension before uploading to Supabase Storage (or S3-compatible endpoint) and inserting the `media_assets` row.
 - Public reads use the bucket public URL (`GET /storage/v1/object/public/{bucket}/{path}`); signed URLs are not used in this demo.
 
 ## 10. Not provided
