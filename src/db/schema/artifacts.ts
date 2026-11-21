@@ -20,6 +20,11 @@ export const artifacts = pgTable(
     createdBy: uuid('created_by').references(() => users.id, {
       onDelete: 'set null',
     }),
+    sourceSystem: text('source_system'),
+    sourceId: text('source_id'),
+    sourceUrl: text('source_url'),
+    sourceRights: text('source_rights'),
+    sourceCredit: text('source_credit'),
     ...timestamps(),
   },
   (t) => [
@@ -32,5 +37,8 @@ export const artifacts = pgTable(
     uniqueIndex('artifacts_museum_id_inventory_code_uidx')
       .on(t.museumId, t.inventoryCode)
       .where(sql`${t.inventoryCode} IS NOT NULL`),
+    uniqueIndex('artifacts_source_system_source_id_uidx')
+      .on(t.sourceSystem, t.sourceId)
+      .where(sql`${t.sourceSystem} IS NOT NULL AND ${t.sourceId} IS NOT NULL`),
   ]
 ).enableRLS();
