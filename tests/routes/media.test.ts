@@ -745,7 +745,7 @@ describe('Phase 5.2 — Media Endpoints', () => {
       expect(saved?.isPrimary).toBe(true);
     });
 
-    it('rejects negative or non-integer sort_order', async () => {
+    it('rejects negative, non-integer, null, or empty sort_order', async () => {
       const negRes = await request(app)
         .patch(`/api/v1/admin/media/${mediaId}`)
         .set('Authorization', 'Bearer museum_admin_token')
@@ -759,6 +759,22 @@ describe('Phase 5.2 — Media Endpoints', () => {
         .send({ sort_order: 1.5 });
 
       expect(floatRes.status).toBe(400);
+
+      const nullRes = await request(app)
+        .patch(`/api/v1/admin/media/${mediaId}`)
+        .set('Authorization', 'Bearer museum_admin_token')
+        .send({ sort_order: null });
+
+      expect(nullRes.status).toBe(400);
+      expect(nullRes.body.error.code).toBe('validation_error');
+
+      const emptyRes = await request(app)
+        .patch(`/api/v1/admin/media/${mediaId}`)
+        .set('Authorization', 'Bearer museum_admin_token')
+        .send({ sort_order: '' });
+
+      expect(emptyRes.status).toBe(400);
+      expect(emptyRes.body.error.code).toBe('validation_error');
     });
 
     it('returns 404 for unknown media and 403 for an unmanaged museum', async () => {

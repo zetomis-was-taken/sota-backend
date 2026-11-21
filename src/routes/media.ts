@@ -48,9 +48,15 @@ export const patchMediaBodySchema = z
   .object({
     sort_order: z.preprocess((val) => {
       if (val === undefined) return undefined;
+      if (val === null || val === '') return null;
       if (typeof val === 'number') return val;
-      const parsed = Number(val);
-      return Number.isInteger(parsed) ? parsed : val;
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed === '') return null;
+        const parsed = Number(trimmed);
+        return Number.isInteger(parsed) ? parsed : val;
+      }
+      return val;
     }, z.number().int('sort_order must be an integer').min(0, 'sort_order must be >= 0').optional()),
     is_primary: z.preprocess((val) => {
       if (val === undefined) return undefined;
