@@ -145,14 +145,14 @@ No direct POST/PATCH/DELETE on invoices or order totals.
 
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| POST | `/api/v1/carts/:cartId/checkout` | authenticated | Body: `{shipping_name, shipping_phone, shipping_address, shipping_city?}`. Locks cart & products, re-checks published status/price/stock, applies server-side flat `shipping_fee`, decrements stock, runs fake payment (`confirmed`/`paid`), creates `SHP-` invoice, marks cart `converted`. |
+| POST | `/api/v1/carts/:cartId/checkout` | authenticated | Body: `{shipping_name, shipping_phone, shipping_address, shipping_city?}`. Locks cart & products, re-checks published status/stock using current product prices, applies server-side flat `shipping_fee` of 30,000 VND (`30000.00`), decrements stock, runs fake payment (`confirmed`/`paid`), creates `SHP-` invoice, marks cart `converted`. |
 | GET | `/api/v1/shop-orders` | authenticated | Own shop orders (`limit`, `offset`) |
 | GET | `/api/v1/shop-orders/:id` | owner / museum admin | Order detail with items and invoice |
 | POST | `/api/v1/shop-orders/:id/cancel` | owner / museum admin | Allowed while `confirmed` and before `shipped`. Sets `cancelled` and restores `stock_quantity`; no refund. |
 | GET | `/api/v1/admin/museums/:museumId/shop-orders` | admin | Fulfillment queue for managed museum (filterable by `status`) |
 | PATCH | `/api/v1/admin/shop-orders/:id/fulfillment` | admin | Body: `{status: "shipped" \| "completed"}`. Allows `confirmed → shipped → completed`. |
 
-`POST /api/v1/carts/:cartId/checkout` error codes: `cart_not_found`, `cart_not_active`, `product_unavailable`, `price_changed`, `out_of_stock`.
+`POST /api/v1/carts/:cartId/checkout` error codes: `cart_not_found`, `cart_not_active`, `cart_empty`, `product_unavailable`, `out_of_stock`.
 
 `PATCH /api/v1/admin/shop-orders/:id/fulfillment` error codes: `order_not_found`, `not_museum_admin`, `invalid_transition`.
 
