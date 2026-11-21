@@ -141,8 +141,8 @@ All multi-row and state-transition writes run inside `db.transaction(...)` with 
 **Checkout cart (`POST /api/v1/carts/:cartId/checkout`)**
 
 1. Lock the cart and its items (`FOR UPDATE`); require the cart to be `active` and owned by the caller.
-2. Lock products with `SELECT ... FOR UPDATE ORDER BY id`; re-check that the museum and products are `published`, plus current price and stock.
-3. Insert `shop_orders` and `shop_order_items` with snapshots; compute `subtotal` and apply a server-side flat `shipping_fee` (`line_total` and `total_amount` are generated). Never accept the fee from the client.
+2. Lock products with `SELECT ... FOR UPDATE ORDER BY id`; re-check that the museum and products are `published`, reading current product prices and checking stock.
+3. Insert `shop_orders` and `shop_order_items` with snapshots; compute `subtotal` from current prices and apply a server-side flat `shipping_fee` of 30,000 VND (`30000.00`) (`line_total` and `total_amount` are generated). Never accept the fee from the client.
 4. Decrement stock conditionally (`WHERE stock_quantity >= qty`); zero affected rows rolls back the transaction.
 5. Fake payment succeeds: `payment_status = 'paid'`, `status = 'confirmed'`; insert `shop_invoices` with `invoice_number = 'SHP-' || nextval('invoice_seq')`.
 6. Mark the cart `converted`.
