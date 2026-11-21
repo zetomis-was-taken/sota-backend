@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   cartItems,
@@ -10,6 +10,7 @@ import {
   souvenirProducts,
   users,
 } from '../db/schema';
+import { canManageMuseum } from '../lib/auth';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../lib/errors';
 import { nextInvoiceNumber } from '../lib/invoice';
 import { formatMinorUnitsAsMoney, parseMoneyToMinorUnits } from '../lib/money';
@@ -371,4 +372,244 @@ export async function checkoutCart(
       invoice: formattedInvoice,
     };
   });
+}
+
+/**
+ * Returns a paginated list of shop orders belonging to the user.
+ */
+export async function listUserShopOrders(
+  userId: string,
+  limit: number,
+  offset: number
+): Promise<{ orders: FormattedShopOrder[]; total: number }> {
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(shopOrders)
+    .where(eq(shopOrders.userId, userId));
+
+  const rows = await db
+    .select()
+    .from(shopOrders)
+    .where(eq(shopOrders.userId, userId))
+    .orderBy(desc(shopOrders.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    orders: rows.map((row) => formatShopOrder(row)),
+    total: Number(total),
+  };
+}
+
+/**
+ * Returns detail of a shop order with items and invoice.
+ * Accessible by order owner or authorized museum admin.
+ */
+export async function getShopOrderById(
+  userId: string,
+  orderId: string
+): Promise<{
+  order: FormattedShopOrder;
+  items: FormattedShopOrderItem[];
+  invoice: FormattedShopInvoice | null;
+}> {
+  const [order] = await db
+    .select()
+    .from(shopOrders)
+    .where(eq(shopOrders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new NotFoundError('Shop order not found', 'order_not_found');
+  }
+
+  const isOwner = order.userId === userId;
+  const isAdmin = !isOwner && (await canManageMuseum(userId, order.museumId));
+  if (!isOwner && !isAdmin) {
+    throw new ForbiddenError('Access denied', 'not_owner_or_admin');
+  }
+
+  const itemRows = await db
+    .select()
+    .from(shopOrderItems)
+    .where(eq(shopOrderItems.orderId, orderId));
+
+  const [invoiceRow] = await db
+    .select()
+    .from(shopInvoices)
+    .where(eq(shopInvoices.orderId, orderId))
+    .limit(1);
+
+  const formattedItems = itemRows.map(formatShopOrderItem);
+  const formattedOrder = formatShopOrder(order, formattedItems);
+  const formattedInvoice = invoiceRow ? formatShopInvoice(invoiceRow) : null;
+
+  return {
+    order: formattedOrder,
+    items: formattedItems,
+    invoice: formattedInvoice,
+  };
+}
+
+/**
+ * Cancels a confirmed shop order and restores product inventory in a single transaction.
+ */
+export async function cancelShopOrder(
+  userId: string,
+  orderId: string
+): Promise<FormattedShopOrder> {
+  return await db.transaction(async (tx) => {
+    const [order] = await tx
+      .select()
+      .from(shopOrders)
+      .where(eq(shopOrders.id, orderId))
+      .for('update')
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundError('Shop order not found', 'order_not_found');
+    }
+
+    const isOwner = order.userId === userId;
+    const isAdmin = !isOwner && (await canManageMuseum(userId, order.museumId));
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenError('Access denied', 'not_owner_or_admin');
+    }
+
+    if (order.status === 'shipped' || order.status === 'completed') {
+      throw new BadRequestError('Order has already been shipped', 'already_shipped');
+    }
+
+    if (order.status !== 'confirmed') {
+      throw new BadRequestError('Order is not cancellable', 'order_not_cancellable');
+    }
+
+    const items = await tx
+      .select()
+      .from(shopOrderItems)
+      .where(eq(shopOrderItems.orderId, orderId))
+      .for('update');
+
+    // Sort by productId to guarantee deadlock-free locking
+    const sortedItems = [...items].sort((a, b) =>
+      a.productId.localeCompare(b.productId)
+    );
+
+    for (const item of sortedItems) {
+      await tx
+        .update(souvenirProducts)
+        .set({ stockQuantity: sql`stock_quantity + ${item.quantity}` })
+        .where(eq(souvenirProducts.id, item.productId));
+    }
+
+    const [updated] = await tx
+      .update(shopOrders)
+      .set({ status: 'cancelled' })
+      .where(and(eq(shopOrders.id, orderId), eq(shopOrders.status, 'confirmed')))
+      .returning();
+
+    if (!updated) {
+      throw new BadRequestError('Order is not cancellable', 'order_not_cancellable');
+    }
+
+    return formatShopOrder(updated);
+  });
+}
+
+/**
+ * Lists shop orders for a managed museum with optional status filtering.
+ */
+export async function listAdminMuseumShopOrders(
+  userId: string,
+  museumId: string,
+  options: {
+    limit: number;
+    offset: number;
+    status?: string;
+  }
+): Promise<{ orders: FormattedShopOrder[]; total: number }> {
+  const [museum] = await db
+    .select({ id: museums.id })
+    .from(museums)
+    .where(eq(museums.id, museumId))
+    .limit(1);
+
+  if (!museum) {
+    throw new NotFoundError('Museum not found');
+  }
+
+  const allowed = await canManageMuseum(userId, museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const conditions = [eq(shopOrders.museumId, museumId)];
+  if (options.status) {
+    conditions.push(eq(shopOrders.status, options.status as any));
+  }
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(shopOrders)
+    .where(and(...conditions));
+
+  const rows = await db
+    .select()
+    .from(shopOrders)
+    .where(and(...conditions))
+    .orderBy(desc(shopOrders.createdAt))
+    .limit(options.limit)
+    .offset(options.offset);
+
+  return {
+    orders: rows.map((row) => formatShopOrder(row)),
+    total: Number(total),
+  };
+}
+
+/**
+ * Updates fulfillment status of a shop order: confirmed -> shipped -> completed.
+ */
+export async function updateShopOrderFulfillment(
+  userId: string,
+  orderId: string,
+  newStatus: 'shipped' | 'completed'
+): Promise<FormattedShopOrder> {
+  const [order] = await db
+    .select()
+    .from(shopOrders)
+    .where(eq(shopOrders.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    throw new NotFoundError('Shop order not found', 'order_not_found');
+  }
+
+  const allowed = await canManageMuseum(userId, order.museumId);
+  if (!allowed) {
+    throw new ForbiddenError('Museum admin access required', 'not_museum_admin');
+  }
+
+  const validFrom = newStatus === 'shipped' ? 'confirmed' : 'shipped';
+  if (order.status !== validFrom) {
+    throw new BadRequestError(
+      `Invalid fulfillment status transition from ${order.status} to ${newStatus}`,
+      'invalid_transition'
+    );
+  }
+
+  const [updated] = await db
+    .update(shopOrders)
+    .set({ status: newStatus })
+    .where(and(eq(shopOrders.id, orderId), eq(shopOrders.status, validFrom)))
+    .returning();
+
+  if (!updated) {
+    throw new BadRequestError(
+      'Invalid fulfillment status transition',
+      'invalid_transition'
+    );
+  }
+
+  return formatShopOrder(updated);
 }
