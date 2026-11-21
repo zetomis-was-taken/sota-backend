@@ -1311,7 +1311,7 @@ describe('Shop Orders API (Phases 4.1 & 4.2)', () => {
       expect(res.body.error?.code).toBe('not_owner_or_admin');
     });
 
-    it('returns 400 already_shipped when order status is shipped or completed', async () => {
+    it('returns 400 already_shipped when order status is shipped', async () => {
       seedShopOrder({
         id: testOrderId,
         userId: validUserId,
@@ -1319,12 +1319,14 @@ describe('Shop Orders API (Phases 4.1 & 4.2)', () => {
         status: 'shipped',
       });
 
-      const res1 = await request(app)
+      const res = await request(app)
         .post(`/api/v1/shop-orders/${testOrderId}/cancel`)
         .set('Authorization', `Bearer ${validToken}`);
-      expect(res1.status).toBe(400);
-      expect(res1.body.error?.code).toBe('already_shipped');
+      expect(res.status).toBe(400);
+      expect(res.body.error?.code).toBe('already_shipped');
+    });
 
+    it('returns 400 order_not_cancellable for completed or cancelled orders', async () => {
       // Completed order
       const completedOrderId = '30000000-0000-4000-8000-000000000002';
       seedShopOrder({
@@ -1334,14 +1336,13 @@ describe('Shop Orders API (Phases 4.1 & 4.2)', () => {
         status: 'completed',
       });
 
-      const res2 = await request(app)
+      const res1 = await request(app)
         .post(`/api/v1/shop-orders/${completedOrderId}/cancel`)
         .set('Authorization', `Bearer ${validToken}`);
-      expect(res2.status).toBe(400);
-      expect(res2.body.error?.code).toBe('already_shipped');
-    });
+      expect(res1.status).toBe(400);
+      expect(res1.body.error?.code).toBe('order_not_cancellable');
 
-    it('returns 400 order_not_cancellable when order is already cancelled', async () => {
+      // Cancelled order
       seedShopOrder({
         id: testOrderId,
         userId: validUserId,
@@ -1349,11 +1350,48 @@ describe('Shop Orders API (Phases 4.1 & 4.2)', () => {
         status: 'cancelled',
       });
 
-      const res = await request(app)
+      const res2 = await request(app)
         .post(`/api/v1/shop-orders/${testOrderId}/cancel`)
         .set('Authorization', `Bearer ${validToken}`);
-      expect(res.status).toBe(400);
-      expect(res.body.error?.code).toBe('order_not_cancellable');
+      expect(res2.status).toBe(400);
+      expect(res2.body.error?.code).toBe('order_not_cancellable');
+    });
+
+    it('does not restore stock twice when cancellation is repeated', async () => {
+      const p1 = mockState.products.get(validProductId1)!;
+      p1.stockQuantity = 8;
+      mockState.products.set(validProductId1, p1);
+
+      seedShopOrder({
+        id: testOrderId,
+        userId: validUserId,
+        museumId: validMuseumId,
+        status: 'confirmed',
+        items: [
+          {
+            productId: validProductId1,
+            productName: 'Bronze Drum Replica',
+            unitPrice: '150000.00',
+            quantity: 2,
+          },
+        ],
+      });
+
+      // First cancel succeeds and restores stock
+      const firstRes = await request(app)
+        .post(`/api/v1/shop-orders/${testOrderId}/cancel`)
+        .set('Authorization', `Bearer ${validToken}`);
+      expect(firstRes.status).toBe(200);
+      expect(firstRes.body.data.status).toBe('cancelled');
+      expect(mockState.products.get(validProductId1)!.stockQuantity).toBe(10); // 8 + 2
+
+      // Second cancel on the same order fails and leaves stock unchanged
+      const secondRes = await request(app)
+        .post(`/api/v1/shop-orders/${testOrderId}/cancel`)
+        .set('Authorization', `Bearer ${validToken}`);
+      expect(secondRes.status).toBe(400);
+      expect(secondRes.body.error?.code).toBe('order_not_cancellable');
+      expect(mockState.products.get(validProductId1)!.stockQuantity).toBe(10); // Still 10, not increased again
     });
 
     it('successfully cancels confirmed order and restores product stock quantities', async () => {

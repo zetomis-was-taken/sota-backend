@@ -476,7 +476,7 @@ export async function cancelShopOrder(
       throw new ForbiddenError('Access denied', 'not_owner_or_admin');
     }
 
-    if (order.status === 'shipped' || order.status === 'completed') {
+    if (order.status === 'shipped') {
       throw new BadRequestError('Order has already been shipped', 'already_shipped');
     }
 
