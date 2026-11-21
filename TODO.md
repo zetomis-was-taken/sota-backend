@@ -82,11 +82,11 @@ Mỗi slice hoàn chỉnh gồm: Zod schema, service (`db` / `tx`), Express rout
 
 ### Slice 6 — Media Upload & Management (`docs/api-contract.md` §5 & §9)
 
-- [ ] Thêm `multipart/form-data` parser (ví dụ `multer` với memory storage + giới hạn dung lượng) và Supabase Storage helper cho buckets `museum-media` & `souvenir-media` (key `{museum_id}/{entity_type}/{entity_id}/{random_filename}`)
-- [ ] `POST /api/v1/admin/media` — kiểm tra quyền museum admin, target entity tồn tại và thuộc cùng `museum_id`, file size, MIME (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`), extension; upload Storage + insert `media_assets` (xử lý `is_primary` duy nhất)
-- [ ] `PATCH /api/v1/admin/media/:id` — `{ sort_order?, is_primary? }`
-- [ ] `DELETE /api/v1/admin/media/:id` — xóa row `media_assets` + xóa object trên Storage (best-effort)
-- [ ] Tests: mock Storage client, validate MIME/size/extension, cross-museum entity check, `is_primary`, best-effort delete
+- [x] Thêm `multipart/form-data` parser (ví dụ `multer` với memory storage + giới hạn dung lượng) và Supabase Storage helper cho buckets `museum-media` & `souvenir-media` (key `{museum_id}/{entity_type}/{entity_id}/{random_filename}`)
+- [x] `POST /api/v1/admin/media` — kiểm tra quyền museum admin, target entity tồn tại và thuộc cùng `museum_id`, file size, MIME (`image/jpeg`, `image/png`, `image/webp`, `video/mp4`, `video/webm`), extension; upload Storage + insert `media_assets` (xử lý `is_primary` duy nhất)
+- [x] `PATCH /api/v1/admin/media/:id` — `{ sort_order?, is_primary? }`
+- [x] `DELETE /api/v1/admin/media/:id` — xóa row `media_assets` + xóa object trên Storage (best-effort)
+- [x] Tests: mock Storage client, validate MIME/size/extension, cross-museum entity check, `is_primary`, best-effort delete
 
 ---
 

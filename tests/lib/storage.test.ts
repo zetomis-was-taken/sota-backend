@@ -1,14 +1,18 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { env } from '../../src/config/env';
 import {
   buildStoragePath,
   uploadMedia,
   deleteMedia,
   getSupabaseStorageClient,
   setStorageClient,
+  resetStorageClient,
 } from '../../src/lib/storage';
 
 describe('storage helper', () => {
   const originalEnv = { ...process.env };
+  const origSupabaseUrl = env.supabaseUrl;
+  const origSupabaseSecretKey = env.supabaseSecretKey;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -16,7 +20,9 @@ describe('storage helper', () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
-    setStorageClient(null);
+    env.supabaseUrl = origSupabaseUrl;
+    env.supabaseSecretKey = origSupabaseSecretKey;
+    resetStorageClient();
   });
 
   describe('buildStoragePath', () => {
@@ -93,7 +99,29 @@ describe('storage helper', () => {
       });
     });
 
-    it('throws error when storage is not configured', async () => {
+    it('throws generic error with cause when upload promise is rejected (e.g. network failure)', async () => {
+      const networkError = new Error('getaddrinfo ENOTFOUND xyz.supabase.co');
+      const mockUpload = vi.fn().mockRejectedValue(networkError);
+      const mockFrom = vi.fn().mockReturnValue({ upload: mockUpload });
+      const mockClient = { storage: { from: mockFrom } };
+
+      setStorageClient(mockClient as any);
+
+      const buffer = Buffer.from('fake data');
+      const promise = uploadMedia('museum-media', 'path/to/file.jpg', buffer, 'image/jpeg');
+
+      await expect(promise).rejects.toThrow('Storage upload failed');
+      await expect(promise).rejects.toSatisfy((err: Error) => {
+        return (
+          err.message === 'Storage upload failed' &&
+          err.cause === networkError
+        );
+      });
+    });
+
+    it('throws error when storage is not configured, even if env credentials exist in CI', async () => {
+      env.supabaseUrl = 'https://example.supabase.co';
+      env.supabaseSecretKey = 'mock-secret-key';
       setStorageClient(null);
 
       const buffer = Buffer.from('fake data');
@@ -184,10 +212,29 @@ describe('storage helper', () => {
       );
     });
 
+    it('throws error when storage is explicitly set to null even if env credentials are set in CI', () => {
+      env.supabaseUrl = 'https://example.supabase.co';
+      env.supabaseSecretKey = 'mock-secret-key';
+      setStorageClient(null);
+
+      expect(() => getSupabaseStorageClient()).toThrow(
+        'Supabase Storage is not configured'
+      );
+    });
+
     it('returns client when explicitly set', () => {
       const mockClient = { storage: {} };
       setStorageClient(mockClient as any);
       expect(getSupabaseStorageClient()).toBe(mockClient);
+    });
+
+    it('restores client from environment when resetStorageClient is called', () => {
+      env.supabaseUrl = 'https://example.supabase.co';
+      env.supabaseSecretKey = 'mock-secret-key';
+      setStorageClient(null);
+
+      resetStorageClient();
+      expect(getSupabaseStorageClient()).toBeDefined();
     });
   });
 });

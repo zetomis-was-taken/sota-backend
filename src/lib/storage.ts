@@ -2,32 +2,32 @@ import { randomBytes } from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { env } from '../config/env';
 
-let storageClient: SupabaseClient | null =
-  env.supabaseUrl && env.supabaseSecretKey
+function initStorageClient(): SupabaseClient | null {
+  return env.supabaseUrl && env.supabaseSecretKey
     ? createClient(env.supabaseUrl, env.supabaseSecretKey, {
         auth: { autoRefreshToken: false, persistSession: false },
       })
     : null;
+}
+
+let storageClient: SupabaseClient | null = initStorageClient();
 
 /** Returns the server-side Supabase Storage client or throws if credentials are missing. */
 export function getSupabaseStorageClient(): SupabaseClient {
-  if (storageClient) {
-    return storageClient;
+  if (!storageClient) {
+    throw new Error('Supabase Storage is not configured');
   }
-
-  if (env.supabaseUrl && env.supabaseSecretKey) {
-    storageClient = createClient(env.supabaseUrl, env.supabaseSecretKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
-    return storageClient;
-  }
-
-  throw new Error('Supabase Storage is not configured');
+  return storageClient;
 }
 
-/** Allows overriding or resetting the storage client (e.g. for testing). */
+/** Allows overriding or clearing the storage client (e.g. for testing). */
 export function setStorageClient(client: SupabaseClient | null): void {
   storageClient = client;
+}
+
+/** Resets the storage client back to the instance derived from current environment variables. */
+export function resetStorageClient(): void {
+  storageClient = initStorageClient();
 }
 
 /** Generates an unguessable storage key: `{museumId}/{entityType}/{entityId}/{random_hex}{extension}` */
@@ -50,12 +50,19 @@ export async function uploadMedia(
   buffer: Buffer,
   mimeType: string
 ): Promise<void> {
-  const { error } = await getSupabaseStorageClient()
-    .storage.from(bucket)
-    .upload(storagePath, buffer, { contentType: mimeType });
+  const client = getSupabaseStorageClient();
 
-  if (error) {
-    throw new Error('Storage upload failed', { cause: error });
+  let uploadResult: { error: unknown } | null = null;
+  try {
+    uploadResult = await client
+      .storage.from(bucket)
+      .upload(storagePath, buffer, { contentType: mimeType });
+  } catch (err) {
+    throw new Error('Storage upload failed', { cause: err });
+  }
+
+  if (uploadResult.error) {
+    throw new Error('Storage upload failed', { cause: uploadResult.error });
   }
 }
 

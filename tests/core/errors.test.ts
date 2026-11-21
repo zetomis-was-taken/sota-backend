@@ -79,11 +79,27 @@ describe('AppError and normalizeError', () => {
     expect(normalized.code).toBe('invalid_json');
   });
 
-  it('normalizes entity.too.large into 413 payload_too_large', () => {
+  it('normalizes entity.too.large and multer LIMIT_FILE_SIZE into 413 payload_too_large', () => {
     const largeErr = { type: 'entity.too.large' };
-    const normalized = normalizeError(largeErr);
-    expect(normalized.statusCode).toBe(413);
-    expect(normalized.code).toBe('payload_too_large');
+    const normalizedLarge = normalizeError(largeErr);
+    expect(normalizedLarge.statusCode).toBe(413);
+    expect(normalizedLarge.code).toBe('payload_too_large');
+
+    const multerSizeErr = { name: 'MulterError', code: 'LIMIT_FILE_SIZE' };
+    const normalizedMulter = normalizeError(multerSizeErr);
+    expect(normalizedMulter.statusCode).toBe(413);
+    expect(normalizedMulter.code).toBe('payload_too_large');
+  });
+
+  it('normalizes other MulterError into 400 invalid_upload', () => {
+    const otherMulterErr = {
+      name: 'MulterError',
+      code: 'LIMIT_UNEXPECTED_FILE',
+      message: 'Unexpected field',
+    };
+    const normalized = normalizeError(otherMulterErr);
+    expect(normalized.statusCode).toBe(400);
+    expect(normalized.code).toBe('invalid_upload');
   });
 
   it('normalizes Postgres unique (23505) and FK (23503) errors into 409 conflict', () => {
