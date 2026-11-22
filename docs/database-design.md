@@ -10,7 +10,7 @@ Postgres (Supabase-hosted) + Drizzle ORM demo using a traditional **application-
 - A ticket purchase is one order with `visit_date`, `time_slot`, one `entry_code`, and any number of ticket types. Slots are a fixed list; there is no capacity limit.
 - Admins manage only museums where they have an `active` membership **and** the `admin_user` role. They cannot change totals, payment status, or issue refunds.
 - The first `super_admin` is inserted by SQL. It creates museums and assigns admins.
-- Catalog rows are archived, never hard-deleted. Users referenced by orders cannot be deleted.
+- Catalog rows are archived, never hard-deleted in runtime application and API workflows. (Technical exception: developer/test CLI reset scripts like `npm run seed:souvenirs -- --clean` may hard-delete managed fixture rows exclusively in local development and test environments under strict local database host guards and fail-fast foreign key checks against `cart_items` and `shop_order_items`). Users referenced by orders cannot be deleted.
 
 ## 2. Conventions
 

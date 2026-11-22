@@ -1,9 +1,18 @@
 import 'dotenv/config';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { env } from '../src/config/env';
 import { closeDb, db } from '../src/db';
-import { museumAdmins, museums, userRoles, users } from '../src/db/schema';
-import { getSupabaseStorageClient } from '../src/lib/storage';
+import {
+  cartItems,
+  mediaAssets,
+  museumAdmins,
+  museums,
+  shopOrderItems,
+  souvenirProducts,
+  userRoles,
+  users,
+} from '../src/db/schema';
+import { deleteMedia, getSupabaseStorageClient } from '../src/lib/storage';
 import { uuidSchema } from '../src/lib/validation';
 import { SEED_MUSEUMS } from './seed-museums';
 
@@ -802,6 +811,231 @@ export function checkCatalogVisibilityWarning(
   return null;
 }
 
+export interface SafeCleanEnvironmentOptions {
+  nodeEnv?: string | null;
+  databaseUrl?: string | null;
+}
+
+/**
+ * Validates that --clean is running in an explicit development or test environment
+ * and that the database URL points to an allowed local/test host (localhost, 127.0.0.1, ::1, 0.0.0.0, *.local, *.test).
+ * Fails fast to prevent accidental data deletion on remote, staging, or production databases.
+ */
+export function assertSafeCleanEnvironment(
+  options?: SafeCleanEnvironmentOptions
+): void {
+  const nodeEnv =
+    options && 'nodeEnv' in options ? options.nodeEnv : process.env.NODE_ENV;
+
+  if (!nodeEnv || (nodeEnv !== 'development' && nodeEnv !== 'test')) {
+    throw new Error(
+      `Refusing to clean database: NODE_ENV must be explicitly set to 'development' or 'test' (received: ${JSON.stringify(
+        nodeEnv
+      )}).`
+    );
+  }
+
+  const rawUrl =
+    options && 'databaseUrl' in options
+      ? options.databaseUrl
+      : (process.env.DATABASE_URL || env.databaseUrl);
+
+  if (!rawUrl || !rawUrl.trim()) {
+    throw new Error(
+      'Refusing to clean database: DATABASE_URL is not configured.'
+    );
+  }
+
+  let hostname: string;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    hostname = parsed.hostname.toLowerCase();
+  } catch {
+    throw new Error(
+      `Refusing to clean database: Invalid DATABASE_URL "${rawUrl}".`
+    );
+  }
+
+  const normalizedHost = hostname.replace(/^\[|\]$/g, '');
+  const isLocal =
+    normalizedHost === 'localhost' ||
+    normalizedHost === '127.0.0.1' ||
+    normalizedHost === '::1' ||
+    normalizedHost === '0.0.0.0' ||
+    normalizedHost.endsWith('.local') ||
+    normalizedHost.endsWith('.test');
+
+  if (!isLocal) {
+    throw new Error(
+      `Refusing to clean database: DATABASE_URL host "${hostname}" is not in the local/test allowlist (localhost, 127.0.0.1, ::1, 0.0.0.0, *.local, *.test). Remote/production databases cannot be cleaned.`
+    );
+  }
+}
+
+export interface ForeignKeyCheckResult {
+  hasReferences: boolean;
+  cartCount: number;
+  orderCount: number;
+  referencedProductIds: string[];
+}
+
+/**
+ * Pre-checks whether any target product IDs are referenced by cart_items or shop_order_items (which have onDelete: 'restrict').
+ * If references are found, aborts immediately by throwing a detailed error before any partial changes can occur.
+ */
+export async function checkForeignKeyReferences(
+  productIds: string[],
+  dbClient: any = db
+): Promise<ForeignKeyCheckResult> {
+  if (productIds.length === 0) {
+    return {
+      hasReferences: false,
+      cartCount: 0,
+      orderCount: 0,
+      referencedProductIds: [],
+    };
+  }
+
+  const referencedInCarts = await dbClient
+    .select({ productId: cartItems.productId })
+    .from(cartItems)
+    .where(inArray(cartItems.productId, productIds));
+
+  const referencedInOrders = await dbClient
+    .select({ productId: shopOrderItems.productId })
+    .from(shopOrderItems)
+    .where(inArray(shopOrderItems.productId, productIds));
+
+  const uniqueReferencedIds = Array.from(
+    new Set([
+      ...referencedInCarts.map((r: { productId: string }) => r.productId),
+      ...referencedInOrders.map((r: { productId: string }) => r.productId),
+    ])
+  );
+
+  if (uniqueReferencedIds.length > 0) {
+    throw new Error(
+      `Cannot clean souvenirs: ${referencedInCarts.length} cart item(s) and ${referencedInOrders.length} order item(s) reference ${uniqueReferencedIds.length} managed product(s) (${uniqueReferencedIds.join(', ')}). Delete aborted to respect foreign key restrictions.`
+    );
+  }
+
+  return {
+    hasReferences: false,
+    cartCount: referencedInCarts.length,
+    orderCount: referencedInOrders.length,
+    referencedProductIds: [],
+  };
+}
+
+export interface CleanExistingSouvenirsResult {
+  deletedProductsCount: number;
+  deletedMediaCount: number;
+}
+
+/**
+ * Safely removes existing managed souvenirs for a specific museum.
+ * Scoped strictly to managed SKUs. Pre-checks foreign keys (cart_items and shop_order_items).
+ * Executes DB deletion within a transaction, then cleans associated Storage objects best-effort.
+ */
+export async function cleanExistingManagedSouvenirs(
+  museumId: string,
+  managedSkus: string[],
+  dbClient: any = db,
+  deleteMediaFn: (bucket: string, path: string) => Promise<void> = deleteMedia
+): Promise<CleanExistingSouvenirsResult> {
+  if (managedSkus.length === 0) {
+    return { deletedProductsCount: 0, deletedMediaCount: 0 };
+  }
+
+  // 1. Find existing managed products for this museum
+  const existingProducts = await dbClient
+    .select({
+      id: souvenirProducts.id,
+      sku: souvenirProducts.sku,
+    })
+    .from(souvenirProducts)
+    .where(
+      and(
+        eq(souvenirProducts.museumId, museumId),
+        inArray(souvenirProducts.sku, managedSkus)
+      )
+    );
+
+  if (existingProducts.length === 0) {
+    return { deletedProductsCount: 0, deletedMediaCount: 0 };
+  }
+
+  const productIds = existingProducts.map(
+    (p: { id: string; sku: string | null }) => p.id
+  );
+
+  // 2. Pre-check foreign key references before touching database
+  await checkForeignKeyReferences(productIds, dbClient);
+
+  // 3. Perform database deletion within transaction
+  let storagePathsToDelete: string[] = [];
+  let deletedMediaCount = 0;
+  let deletedProductsCount = 0;
+
+  await dbClient.transaction(async (tx: any) => {
+    // 3a. Retrieve storage paths of associated media assets
+    const mediaRows = await tx
+      .select({
+        id: mediaAssets.id,
+        storagePath: mediaAssets.storagePath,
+      })
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.entityType, 'souvenir'),
+          inArray(mediaAssets.entityId, productIds)
+        )
+      );
+
+    storagePathsToDelete = mediaRows
+      .map((m: { storagePath: string | null }) => m.storagePath)
+      .filter((p: string | null): p is string => typeof p === 'string' && p.length > 0);
+
+    // 3b. Delete media assets
+    if (mediaRows.length > 0) {
+      await tx
+        .delete(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.entityType, 'souvenir'),
+            inArray(mediaAssets.entityId, productIds)
+          )
+        );
+      deletedMediaCount = mediaRows.length;
+    }
+
+    // 3c. Delete souvenir products
+    await tx
+      .delete(souvenirProducts)
+      .where(inArray(souvenirProducts.id, productIds));
+
+    deletedProductsCount = existingProducts.length;
+  });
+
+  // 4. Best-effort Supabase Storage object cleanup after successful DB commit
+  const bucketName = env.souvenirMediaBucket;
+  for (const path of storagePathsToDelete) {
+    try {
+      await deleteMediaFn(bucketName, path);
+    } catch (storageErr) {
+      console.warn(
+        `[seed:souvenirs] Warning: Failed to delete storage object "${path}" (best-effort):`,
+        storageErr
+      );
+    }
+  }
+
+  return {
+    deletedProductsCount,
+    deletedMediaCount,
+  };
+}
+
 export interface SeedSouvenirsCliOptions {
   superadminId?: string;
   status?: 'draft' | 'published';
@@ -819,12 +1053,19 @@ export interface SeedSouvenirsConfig {
 export interface SeedRunDependencies {
   dbClient?: any;
   storageClient?: any;
+  deleteMediaFn?: (bucket: string, path: string) => Promise<void>;
+  nodeEnv?: string | null;
+  databaseUrl?: string | null;
 }
 
 export interface SeedRunResult {
   museums: MuseumRecordInfo[];
   warnings: string[];
   storagePreflight: StoragePreflightResult;
+  cleanSummary?: {
+    deletedProductsCount: number;
+    deletedMediaCount: number;
+  };
 }
 
 /**
@@ -880,6 +1121,7 @@ export function parseCliArgs(
 export function validateSeedConfig(envConfig: {
   superadminId?: string | null;
   nodeEnv?: string | null;
+  databaseUrl?: string | null;
   status?: 'draft' | 'published';
   clean?: boolean;
   skipMedia?: boolean;
@@ -887,6 +1129,14 @@ export function validateSeedConfig(envConfig: {
   const nodeEnv = envConfig.nodeEnv?.trim() || 'development';
   if (nodeEnv === 'production') {
     throw new Error('Refusing to run seed script in production environment.');
+  }
+
+  const clean = Boolean(envConfig.clean);
+  if (clean) {
+    assertSafeCleanEnvironment({
+      nodeEnv: envConfig.nodeEnv,
+      databaseUrl: envConfig.databaseUrl,
+    });
   }
 
   const rawSuperadminId = envConfig.superadminId?.trim();
@@ -908,7 +1158,7 @@ export function validateSeedConfig(envConfig: {
   return {
     superadminId: rawSuperadminId,
     status,
-    clean: Boolean(envConfig.clean),
+    clean,
     skipMedia: Boolean(envConfig.skipMedia),
   };
 }
@@ -963,6 +1213,30 @@ export async function run(
     `[seed:souvenirs] Starting orchestration with status="${config.status}", skipMedia=${config.skipMedia}, clean=${config.clean}...`
   );
 
+  // If clean requested, enforce safety environment guard and pre-check all managed SKUs upfront
+  if (config.clean) {
+    assertSafeCleanEnvironment({
+      nodeEnv: deps.nodeEnv,
+      databaseUrl: deps.databaseUrl,
+    });
+    console.log(
+      '[seed:souvenirs] Safe clean environment verified (local/test host and explicit dev/test NODE_ENV).'
+    );
+
+    const allManagedSkus = getManagedSkus();
+    const allExistingManaged = await dbClient
+      .select({ id: souvenirProducts.id, sku: souvenirProducts.sku })
+      .from(souvenirProducts)
+      .where(inArray(souvenirProducts.sku, allManagedSkus));
+
+    if (allExistingManaged.length > 0) {
+      const allProductIds = allExistingManaged.map(
+        (p: { id: string }) => p.id
+      );
+      await checkForeignKeyReferences(allProductIds, dbClient);
+    }
+  }
+
   // 1. Storage Preflight
   const storagePreflight = await runStoragePreflight(
     { skipMedia: config.skipMedia, bucketName: env.souvenirMediaBucket },
@@ -982,6 +1256,8 @@ export async function run(
   // 2. Discover/Create Museums & Check Visibility
   const processedMuseums: MuseumRecordInfo[] = [];
   const warnings: string[] = [];
+  let totalDeletedProducts = 0;
+  let totalDeletedMedia = 0;
 
   for (const def of SOUVENIR_FIXTURES) {
     const museum = await findOrCreateMuseum(
@@ -994,6 +1270,23 @@ export async function run(
     );
     processedMuseums.push(museum);
 
+    if (config.clean) {
+      const museumSkus = def.items.map((i) => i.sku);
+      const cleanResult = await cleanExistingManagedSouvenirs(
+        museum.id,
+        museumSkus,
+        dbClient,
+        deps.deleteMediaFn ?? deleteMedia
+      );
+      totalDeletedProducts += cleanResult.deletedProductsCount;
+      totalDeletedMedia += cleanResult.deletedMediaCount;
+      if (cleanResult.deletedProductsCount > 0) {
+        console.log(
+          `[seed:souvenirs] Cleaned ${cleanResult.deletedProductsCount} existing managed souvenirs and ${cleanResult.deletedMediaCount} media assets for museum "${museum.name}".`
+        );
+      }
+    }
+
     const warning = checkCatalogVisibilityWarning(museum, config.status);
     if (warning) {
       warnings.push(warning);
@@ -1004,11 +1297,22 @@ export async function run(
   console.log(
     `[seed:souvenirs] Verified ${processedMuseums.length} target Smithsonian museums.`
   );
+  if (config.clean) {
+    console.log(
+      `[seed:souvenirs] Clean summary: ${totalDeletedProducts} products and ${totalDeletedMedia} media assets deleted across all target museums.`
+    );
+  }
 
   return {
     museums: processedMuseums,
     warnings,
     storagePreflight,
+    cleanSummary: config.clean
+      ? {
+          deletedProductsCount: totalDeletedProducts,
+          deletedMediaCount: totalDeletedMedia,
+        }
+      : undefined,
   };
 }
 
@@ -1020,11 +1324,15 @@ export async function main() {
     clean: rawOptions.clean,
     skipMedia: rawOptions.skipMedia,
     nodeEnv: process.env.NODE_ENV,
+    databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
   });
 
   try {
     await verifySuperadminExists(config.superadminId);
-    await run(config);
+    await run(config, {
+      nodeEnv: process.env.NODE_ENV,
+      databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
+    });
   } finally {
     await closeDb();
   }

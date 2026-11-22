@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import provenanceManifest from '../../scripts/fixtures/souvenir-media-provenance.json';
 import { SEED_MUSEUMS } from '../../scripts/seed-museums';
 import {
+  assertSafeCleanEnvironment,
   buildProductSeedData,
   checkCatalogVisibilityWarning,
+  checkForeignKeyReferences,
   checkStorageBucketPreflight,
+  cleanExistingManagedSouvenirs,
   findOrCreateMuseum,
   getManagedSkus,
   MANAGED_SKUS,
@@ -959,6 +962,498 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       expect(result.museums[0].status).toBe('published');
       // No visibility warning because published museums do not hide draft products
       expect(result.warnings).toHaveLength(0);
+    });
+  });
+
+  describe('Seed Souvenirs Script - Phase 3 Safe Scoped Clean & Foreign Key Pre-check', () => {
+    describe('Environment & Database Allowlist Guard (assertSafeCleanEnvironment)', () => {
+      it('throws if NODE_ENV is undefined or empty', () => {
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: undefined,
+            databaseUrl: 'postgresql://postgres:pass@localhost:5432/postgres',
+          })
+        ).toThrow(/NODE_ENV must be explicitly set to 'development' or 'test'/);
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: '',
+            databaseUrl: 'postgresql://postgres:pass@localhost:5432/postgres',
+          })
+        ).toThrow(/NODE_ENV must be explicitly set to 'development' or 'test'/);
+      });
+
+      it('throws if NODE_ENV is production or staging', () => {
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'production',
+            databaseUrl: 'postgresql://postgres:pass@localhost:5432/postgres',
+          })
+        ).toThrow(/NODE_ENV must be explicitly set to 'development' or 'test'/);
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'staging',
+            databaseUrl: 'postgresql://postgres:pass@localhost:5432/postgres',
+          })
+        ).toThrow(/NODE_ENV must be explicitly set to 'development' or 'test'/);
+      });
+
+      it('throws if DATABASE_URL is missing or invalid', () => {
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl: '',
+          })
+        ).toThrow(/DATABASE_URL is not configured/);
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl: 'not-a-valid-url',
+          })
+        ).toThrow(/Invalid DATABASE_URL/);
+      });
+
+      it('throws if DATABASE_URL points to a remote/cloud host', () => {
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl:
+              'postgresql://postgres:pass@db.xyz.supabase.co:5432/postgres',
+          })
+        ).toThrow(
+          /DATABASE_URL host "db.xyz.supabase.co" is not in the local\/test allowlist/
+        );
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'test',
+            databaseUrl:
+              'postgresql://postgres:pass@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres',
+          })
+        ).toThrow(/not in the local\/test allowlist/);
+      });
+
+      it('allows clean on permitted local and test hostnames', () => {
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl: 'postgresql://postgres:pass@localhost:5432/postgres',
+          })
+        ).not.toThrow();
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'test',
+            databaseUrl: 'postgresql://postgres:pass@127.0.0.1:5432/testdb',
+          })
+        ).not.toThrow();
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'test',
+            databaseUrl: 'postgresql://postgres:pass@[::1]:5432/testdb',
+          })
+        ).not.toThrow();
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl: 'postgresql://postgres:pass@0.0.0.0:5432/devdb',
+          })
+        ).not.toThrow();
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl: 'postgresql://postgres:pass@postgres.internal.local:5432/db',
+          })
+        ).not.toThrow();
+
+        expect(() =>
+          assertSafeCleanEnvironment({
+            nodeEnv: 'test',
+            databaseUrl: 'postgresql://postgres:pass@db.service.test:5432/db',
+          })
+        ).not.toThrow();
+      });
+    });
+
+    describe('Configuration Validation for --clean', () => {
+      it('enforces safe environment when clean flag is enabled', () => {
+        expect(() =>
+          validateSeedConfig({
+            superadminId: '11111111-2222-4333-8444-555555555555',
+            clean: true,
+            nodeEnv: undefined,
+            databaseUrl: 'postgresql://localhost:5432/db',
+          })
+        ).toThrow(/NODE_ENV must be explicitly set/);
+
+        expect(() =>
+          validateSeedConfig({
+            superadminId: '11111111-2222-4333-8444-555555555555',
+            clean: true,
+            nodeEnv: 'development',
+            databaseUrl: 'postgresql://db.remote.supabase.co:5432/db',
+          })
+        ).toThrow(/not in the local\/test allowlist/);
+
+        const validConfig = validateSeedConfig({
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          clean: true,
+          nodeEnv: 'development',
+          databaseUrl: 'postgresql://localhost:5432/db',
+        });
+        expect(validConfig.clean).toBe(true);
+      });
+    });
+
+    describe('Foreign Key Pre-check (checkForeignKeyReferences)', () => {
+      it('returns empty references when productIds array is empty', async () => {
+        const mockDb: any = {};
+        const result = await checkForeignKeyReferences([], mockDb);
+        expect(result.hasReferences).toBe(false);
+        expect(result.cartCount).toBe(0);
+        expect(result.orderCount).toBe(0);
+      });
+
+      it('returns empty references when no cart_items or shop_order_items reference products', async () => {
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]), // cart_items empty
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]), // shop_order_items empty
+              }),
+            }),
+        };
+
+        const result = await checkForeignKeyReferences(['prod-1', 'prod-2'], mockDb);
+        expect(result.hasReferences).toBe(false);
+        expect(result.referencedProductIds).toHaveLength(0);
+      });
+
+      it('aborts and throws descriptive error when cart_items reference target products', async () => {
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ productId: 'prod-1' }]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+        };
+
+        await expect(
+          checkForeignKeyReferences(['prod-1', 'prod-2'], mockDb)
+        ).rejects.toThrow(
+          /Cannot clean souvenirs: 1 cart item\(s\) and 0 order item\(s\) reference 1 managed product\(s\) \(prod-1\)/
+        );
+      });
+
+      it('aborts and throws descriptive error when shop_order_items reference target products', async () => {
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  { productId: 'prod-2' },
+                  { productId: 'prod-3' },
+                ]),
+              }),
+            }),
+        };
+
+        await expect(
+          checkForeignKeyReferences(['prod-1', 'prod-2', 'prod-3'], mockDb)
+        ).rejects.toThrow(
+          /Cannot clean souvenirs: 0 cart item\(s\) and 2 order item\(s\) reference 2 managed product\(s\)/
+        );
+      });
+    });
+
+    describe('Scoped Managed Souvenirs Cleanup (cleanExistingManagedSouvenirs)', () => {
+      it('returns zero deleted when managedSkus is empty', async () => {
+        const mockDb: any = {};
+        const result = await cleanExistingManagedSouvenirs('museum-1', [], mockDb);
+        expect(result.deletedProductsCount).toBe(0);
+        expect(result.deletedMediaCount).toBe(0);
+      });
+
+      it('returns zero deleted when no managed products exist in database for the museum', async () => {
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]), // No products found
+            }),
+          }),
+        };
+
+        const result = await cleanExistingManagedSouvenirs(
+          'museum-1',
+          ['NMNH-MIN-001'],
+          mockDb
+        );
+        expect(result.deletedProductsCount).toBe(0);
+        expect(result.deletedMediaCount).toBe(0);
+      });
+
+      it('aborts before transaction when foreign keys are locked by cart_items', async () => {
+        const existingProds = [{ id: 'prod-1', sku: 'NMNH-MIN-001' }];
+        const transactionSpy = vi.fn();
+
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(existingProds),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ productId: 'prod-1' }]), // In cart
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          transaction: transactionSpy,
+        };
+
+        await expect(
+          cleanExistingManagedSouvenirs('museum-1', ['NMNH-MIN-001'], mockDb)
+        ).rejects.toThrow(/Cannot clean souvenirs/);
+
+        // Verify transaction was never started because FK check failed first
+        expect(transactionSpy).not.toHaveBeenCalled();
+      });
+
+      it('deletes media assets and products within transaction and cleans storage best-effort', async () => {
+        const existingProds = [
+          { id: 'prod-1', sku: 'NMNH-MIN-001' },
+          { id: 'prod-2', sku: 'NMNH-MIN-002' },
+        ];
+        const mediaRows = [
+          { id: 'media-1', storagePath: 'museum-1/souvenir/prod-1/img1.jpg' },
+          { id: 'media-2', storagePath: 'museum-1/souvenir/prod-2/img2.jpg' },
+        ];
+
+        const deleteSpy = vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        });
+
+        const mockTx = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue(mediaRows),
+            }),
+          }),
+          delete: deleteSpy,
+        };
+
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(existingProds),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]), // cart_items empty
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]), // shop_order_items empty
+              }),
+            }),
+          transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
+        };
+
+        const mockDeleteMedia = vi.fn().mockResolvedValue(undefined);
+
+        const result = await cleanExistingManagedSouvenirs(
+          'museum-1',
+          ['NMNH-MIN-001', 'NMNH-MIN-002'],
+          mockDb,
+          mockDeleteMedia
+        );
+
+        expect(result.deletedProductsCount).toBe(2);
+        expect(result.deletedMediaCount).toBe(2);
+        expect(deleteSpy).toHaveBeenCalledTimes(2); // Deleted mediaAssets, then souvenirProducts
+        expect(mockDeleteMedia).toHaveBeenCalledTimes(2);
+        expect(mockDeleteMedia).toHaveBeenCalledWith(
+          env.souvenirMediaBucket,
+          'museum-1/souvenir/prod-1/img1.jpg'
+        );
+      });
+
+      it('catches storage deletion errors without failing the cleanup (best-effort)', async () => {
+        const existingProds = [{ id: 'prod-1', sku: 'NMNH-MIN-001' }];
+        const mediaRows = [
+          { id: 'media-1', storagePath: 'museum-1/souvenir/prod-1/img1.jpg' },
+        ];
+
+        const mockTx = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue(mediaRows),
+            }),
+          }),
+          delete: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([]),
+          }),
+        };
+
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(existingProds),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          transaction: vi.fn().mockImplementation(async (cb) => cb(mockTx)),
+        };
+
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const failingDeleteMedia = vi
+          .fn()
+          .mockRejectedValue(new Error('Storage network timeout'));
+
+        const result = await cleanExistingManagedSouvenirs(
+          'museum-1',
+          ['NMNH-MIN-001'],
+          mockDb,
+          failingDeleteMedia
+        );
+
+        expect(result.deletedProductsCount).toBe(1);
+        expect(result.deletedMediaCount).toBe(1);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Failed to delete storage object'),
+          expect.any(Error)
+        );
+
+        warnSpy.mockRestore();
+      });
+    });
+
+    describe('Orchestration with --clean', () => {
+      it('aborts run early if upfront FK check detects locked products', async () => {
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ id: 'locked-prod', sku: 'NMNH-MIN-001' }]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ productId: 'locked-prod' }]), // in cart
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+        };
+
+        await expect(
+          run(
+            {
+              superadminId: '11111111-2222-4333-8444-555555555555',
+              status: 'published',
+              clean: true,
+              skipMedia: true,
+            },
+            {
+              dbClient: mockDb,
+              nodeEnv: 'test',
+              databaseUrl: 'postgresql://localhost:5432/testdb',
+            }
+          )
+        ).rejects.toThrow(/Cannot clean souvenirs: 1 cart item\(s\)/);
+      });
+
+      it('successfully cleans managed souvenirs across museums in clean run', async () => {
+        const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+          id: `00000000-0000-4000-8000-00000000000${idx}`,
+          name: m.museumName,
+          slug: m.museumSlug,
+          status: 'published' as const,
+        }));
+
+        let museumIdx = 0;
+        const mockDb: any = {
+          select: vi.fn().mockImplementation(() => ({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation(() => {
+                const wherePromise = Promise.resolve([]) as any;
+                wherePromise.limit = vi.fn().mockImplementation(() => {
+                  const item = fakeMuseums[museumIdx++];
+                  return Promise.resolve(item ? [item] : []);
+                });
+                return wherePromise;
+              }),
+            }),
+          })),
+          insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockReturnValue({
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        };
+
+        const result = await run(
+          {
+            superadminId: '11111111-2222-4333-8444-555555555555',
+            status: 'published',
+            clean: true,
+            skipMedia: true,
+          },
+          {
+            dbClient: mockDb,
+            nodeEnv: 'test',
+            databaseUrl: 'postgresql://localhost:5432/testdb',
+          }
+        );
+
+        expect(result.museums).toHaveLength(6);
+        expect(result.cleanSummary).toEqual({
+          deletedProductsCount: 0,
+          deletedMediaCount: 0,
+        });
+      });
     });
   });
 });
