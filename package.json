@@ -19,6 +19,7 @@
     "db:check": "drizzle-kit check",
     "db:studio": "drizzle-kit studio",
     "seed:smithsonian": "tsx scripts/seed-smithsonian.ts",
+    "seed:superadmins": "tsx scripts/seed-superadmins.ts",
     "typecheck:seed": "tsc --noEmit -p tsconfig.scripts.json"
   },
   "repository": {
