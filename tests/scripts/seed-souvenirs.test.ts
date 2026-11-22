@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import provenanceManifest from '../../scripts/fixtures/souvenir-media-provenance.json';
 import { SEED_MUSEUMS } from '../../scripts/seed-museums';
 import {
   buildProductSeedData,
+  checkCatalogVisibilityWarning,
+  checkStorageBucketPreflight,
+  findOrCreateMuseum,
   getManagedSkus,
   MANAGED_SKUS,
+  runStoragePreflight,
   SOUVENIR_FIXTURES,
+  validateStorageConfig,
 } from '../../scripts/seed-souvenirs';
+import { env } from '../../src/config/env';
 
 describe('Seed Souvenirs Script (scripts/seed-souvenirs.ts) - Phase 1 Fixtures', () => {
   describe('Museums and Scope', () => {
@@ -314,6 +320,303 @@ describe('Seed Souvenirs Script (scripts/seed-souvenirs.ts) - Phase 1 Fixtures',
       }
 
       expect(uniqueImageUrls.size).toBe(38);
+    });
+  });
+});
+
+describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Create, & Visibility', () => {
+  describe('Storage Configuration and Preflight Checks', () => {
+    it('validates storage config returns required env variables', () => {
+      const origUrl = env.supabaseUrl;
+      const origKey = env.supabaseSecretKey;
+
+      try {
+        (env as any).supabaseUrl = 'https://fake-project.supabase.co';
+        (env as any).supabaseSecretKey = 'fake-secret-key';
+
+        const config = validateStorageConfig();
+        expect(config.supabaseUrl).toBe('https://fake-project.supabase.co');
+        expect(config.supabaseSecretKey).toBe('fake-secret-key');
+        expect(config.souvenirMediaBucket).toBeDefined();
+      } finally {
+        (env as any).supabaseUrl = origUrl;
+        (env as any).supabaseSecretKey = origKey;
+      }
+    });
+
+    it('throws descriptive error when Supabase storage credentials are missing', () => {
+      const origUrl = env.supabaseUrl;
+      const origKey = env.supabaseSecretKey;
+
+      try {
+        (env as any).supabaseUrl = '';
+        (env as any).supabaseSecretKey = '';
+
+        expect(() => validateStorageConfig()).toThrow(
+          'Missing Supabase Storage configuration. Required: SUPABASE_URL and SUPABASE_SECRET_KEY.'
+        );
+      } finally {
+        (env as any).supabaseUrl = origUrl;
+        (env as any).supabaseSecretKey = origKey;
+      }
+    });
+
+    it('passes preflight check when bucket exists and is public', async () => {
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn().mockResolvedValue({
+            data: { id: 'souvenir-media', name: 'souvenir-media', public: true },
+            error: null,
+          }),
+        },
+      };
+
+      const result = await checkStorageBucketPreflight(
+        'souvenir-media',
+        mockStorageClient
+      );
+      expect(result.ok).toBe(true);
+      expect(result.bucketName).toBe('souvenir-media');
+      expect(result.isPublic).toBe(true);
+      expect(mockStorageClient.storage.getBucket).toHaveBeenCalledWith(
+        'souvenir-media'
+      );
+    });
+
+    it('bypasses preflight check when skipMedia option is active', async () => {
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn(),
+        },
+      };
+
+      const result = await runStoragePreflight(
+        { skipMedia: true },
+        mockStorageClient
+      );
+      expect(result.skipped).toBe(true);
+      expect(mockStorageClient.storage.getBucket).not.toHaveBeenCalled();
+    });
+
+    it('fails fast when bucket does not exist and gives TODO.md guidance', async () => {
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn().mockResolvedValue({
+            data: null,
+            error: { message: 'Bucket not found' },
+          }),
+        },
+      };
+
+      await expect(
+        checkStorageBucketPreflight('souvenir-media', mockStorageClient)
+      ).rejects.toThrow(/không tồn tại trên Supabase Storage.*TODO\.md/);
+    });
+
+    it('fails fast when bucket exists but is private (public: false)', async () => {
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn().mockResolvedValue({
+            data: { id: 'souvenir-media', name: 'souvenir-media', public: false },
+            error: null,
+          }),
+        },
+      };
+
+      await expect(
+        checkStorageBucketPreflight('souvenir-media', mockStorageClient)
+      ).rejects.toThrow(
+        /tồn tại nhưng không ở chế độ public \(public: false\)/
+      );
+    });
+  });
+
+  describe('Museum Find-or-Create Logic', () => {
+    it('preserves existing museum status and assigns superadmin without updating status', async () => {
+      const fakeSuperadminId = '99999999-9999-4999-8999-999999999999';
+      const existingMuseum = {
+        id: '12345678-1234-4234-8234-123456789abc',
+        name: 'National Museum of Natural History',
+        slug: 'national-museum-of-natural-history',
+        status: 'draft' as const,
+      };
+
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([existingMuseum]),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      };
+
+      const result = await findOrCreateMuseum(
+        {
+          museumSlug: 'national-museum-of-natural-history',
+          museumName: 'National Museum of Natural History',
+        },
+        {
+          superadminId: fakeSuperadminId,
+          newMuseumStatus: 'published',
+        },
+        mockDb
+      );
+
+      expect(result.id).toBe(existingMuseum.id);
+      expect(result.name).toBe(existingMuseum.name);
+      expect(result.status).toBe('draft'); // Status is preserved as 'draft', not overridden to 'published'
+      expect(result.isCreated).toBe(false);
+
+      expect(mockDb.insert).toHaveBeenCalledTimes(1); // Only museumAdmins inserted
+    });
+
+    it('creates a new museum with default status published and assigns superadmin', async () => {
+      const fakeSuperadminId = '99999999-9999-4999-8999-999999999999';
+      const createdMuseum = {
+        id: '87654321-4321-4321-8321-cba987654321',
+        name: 'National Air and Space Museum',
+        slug: 'national-air-and-space-museum',
+        status: 'published' as const,
+      };
+
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]), // Does not exist
+            }),
+          }),
+        }),
+        insert: vi.fn()
+          .mockReturnValueOnce({
+            values: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([createdMuseum]),
+            }),
+          })
+          .mockReturnValueOnce({
+            values: vi.fn().mockReturnValue({
+              onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+      };
+
+      const result = await findOrCreateMuseum(
+        {
+          museumSlug: 'national-air-and-space-museum',
+          museumName: 'National Air and Space Museum',
+        },
+        {
+          superadminId: fakeSuperadminId,
+        },
+        mockDb
+      );
+
+      expect(result.id).toBe(createdMuseum.id);
+      expect(result.name).toBe(createdMuseum.name);
+      expect(result.status).toBe('published');
+      expect(result.isCreated).toBe(true);
+
+      expect(mockDb.insert).toHaveBeenCalledTimes(2); // museums and museumAdmins
+    });
+
+    it('respects newMuseumStatus override when creating a new museum', async () => {
+      const fakeSuperadminId = '99999999-9999-4999-8999-999999999999';
+      const createdDraftMuseum = {
+        id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        name: 'Custom New Museum',
+        slug: 'custom-new-museum',
+        status: 'draft' as const,
+      };
+
+      let insertedValues: any = null;
+
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        }),
+        insert: vi.fn()
+          .mockReturnValueOnce({
+            values: vi.fn().mockImplementation((val) => {
+              insertedValues = val;
+              return {
+                returning: vi.fn().mockResolvedValue([createdDraftMuseum]),
+              };
+            }),
+          })
+          .mockReturnValueOnce({
+            values: vi.fn().mockReturnValue({
+              onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+      };
+
+      const result = await findOrCreateMuseum(
+        {
+          museumSlug: 'custom-new-museum',
+          museumName: 'Custom New Museum',
+        },
+        {
+          superadminId: fakeSuperadminId,
+          newMuseumStatus: 'draft',
+        },
+        mockDb
+      );
+
+      expect(result.status).toBe('draft');
+      expect(result.isCreated).toBe(true);
+      expect(insertedValues.status).toBe('draft');
+    });
+  });
+
+  describe('Catalog Visibility Checks (api-contract.md:79)', () => {
+    it('warns when target museum is draft and product is published', () => {
+      const warning = checkCatalogVisibilityWarning(
+        { name: 'National Museum of Natural History', status: 'draft' },
+        'published'
+      );
+
+      expect(warning).not.toBeNull();
+      expect(warning).toContain('bị ẩn khỏi Public Catalog API (404)');
+      expect(warning).toContain('draft');
+    });
+
+    it('warns when target museum is archived and product is published', () => {
+      const warning = checkCatalogVisibilityWarning(
+        { name: 'National Air and Space Museum', status: 'archived' },
+        'published'
+      );
+
+      expect(warning).not.toBeNull();
+      expect(warning).toContain('bị ẩn khỏi Public Catalog API (404)');
+      expect(warning).toContain('archived');
+    });
+
+    it('returns null (no warning) when museum is published and product is published', () => {
+      const warning = checkCatalogVisibilityWarning(
+        { name: 'National Portrait Gallery', status: 'published' },
+        'published'
+      );
+
+      expect(warning).toBeNull();
+    });
+
+    it('returns null (no warning) when product itself is draft', () => {
+      const warning = checkCatalogVisibilityWarning(
+        { name: 'Hirshhorn Museum', status: 'draft' },
+        'draft'
+      );
+
+      expect(warning).toBeNull();
     });
   });
 });

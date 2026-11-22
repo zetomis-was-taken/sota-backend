@@ -1,4 +1,10 @@
 import 'dotenv/config';
+import { eq, or } from 'drizzle-orm';
+import { env } from '../src/config/env';
+import { db } from '../src/db';
+import { museumAdmins, museums } from '../src/db/schema';
+import { getSupabaseStorageClient } from '../src/lib/storage';
+import { SEED_MUSEUMS } from './seed-museums';
 
 export interface SouvenirFixtureItem {
   sku: string;
@@ -585,6 +591,198 @@ export const MANAGED_SKUS: ReadonlySet<string> = new Set(
 
 export function getManagedSkus(): string[] {
   return Array.from(MANAGED_SKUS);
+}
+
+export interface StoragePreflightResult {
+  skipped: boolean;
+  bucketName: string;
+  isPublic?: boolean;
+}
+
+export interface FindOrCreateMuseumOptions {
+  superadminId: string;
+  newMuseumStatus?: 'draft' | 'published';
+}
+
+export interface MuseumRecordInfo {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'draft' | 'published' | 'archived';
+  isCreated: boolean;
+}
+
+/**
+ * Validates Supabase Storage configuration environment variables.
+ */
+export function validateStorageConfig(): {
+  supabaseUrl: string;
+  supabaseSecretKey: string;
+  souvenirMediaBucket: string;
+} {
+  if (!env.supabaseUrl || !env.supabaseSecretKey) {
+    throw new Error(
+      'Missing Supabase Storage configuration. Required: SUPABASE_URL and SUPABASE_SECRET_KEY.'
+    );
+  }
+  return {
+    supabaseUrl: env.supabaseUrl,
+    supabaseSecretKey: env.supabaseSecretKey,
+    souvenirMediaBucket: env.souvenirMediaBucket,
+  };
+}
+
+/**
+ * Preflight check ensuring the souvenir-media storage bucket exists and is public.
+ */
+export async function checkStorageBucketPreflight(
+  bucketName: string,
+  storageClient?: any
+): Promise<{ ok: boolean; bucketName: string; isPublic: boolean }> {
+  const client = storageClient ?? getSupabaseStorageClient();
+  const { data: bucket, error } = await client.storage.getBucket(bucketName);
+
+  if (error || !bucket) {
+    throw new Error(
+      `Bucket "${bucketName}" không tồn tại trên Supabase Storage (${
+        error?.message || 'Not found'
+      }). Vui lòng tạo public bucket "${bucketName}" theo hướng dẫn tại TODO.md (dòng 97) trước khi chạy seed.`
+    );
+  }
+
+  if (!bucket.public) {
+    throw new Error(
+      `Bucket "${bucketName}" tồn tại nhưng không ở chế độ public (public: false). Vui lòng cập nhật cấu hình bucket "${bucketName}" thành Public (public: true) để catalog có thể phục vụ hình ảnh công khai.`
+    );
+  }
+
+  return { ok: true, bucketName, isPublic: bucket.public };
+}
+
+/**
+ * Runs storage preflight check unless skipMedia option is active.
+ */
+export async function runStoragePreflight(
+  options: { skipMedia?: boolean; bucketName?: string } = {},
+  storageClient?: any
+): Promise<StoragePreflightResult> {
+  const bucketName = options.bucketName || env.souvenirMediaBucket;
+  if (options.skipMedia) {
+    return { skipped: true, bucketName };
+  }
+  const result = await checkStorageBucketPreflight(bucketName, storageClient);
+  return {
+    skipped: false,
+    bucketName: result.bucketName,
+    isPublic: result.isPublic,
+  };
+}
+
+/**
+ * Finds an existing museum by slug/name preserving its existing status,
+ * or creates a new museum with default status 'published' and assigns the superadmin.
+ */
+export async function findOrCreateMuseum(
+  def: {
+    museumSlug?: string;
+    slug?: string;
+    museumName?: string;
+    name?: string;
+  },
+  options: FindOrCreateMuseumOptions,
+  dbClient: any = db
+): Promise<MuseumRecordInfo> {
+  const slug = def.museumSlug || def.slug;
+  const name = def.museumName || def.name;
+
+  if (!slug || !name) {
+    throw new Error('Both museum slug and name must be provided');
+  }
+
+  const [existing] = await dbClient
+    .select({
+      id: museums.id,
+      name: museums.name,
+      slug: museums.slug,
+      status: museums.status,
+    })
+    .from(museums)
+    .where(or(eq(museums.slug, slug), eq(museums.name, name)))
+    .limit(1);
+
+  if (existing) {
+    // Preserve existing status without silently changing it
+    await dbClient
+      .insert(museumAdmins)
+      .values({
+        museumId: existing.id,
+        userId: options.superadminId,
+        status: 'active',
+        assignedBy: options.superadminId,
+      })
+      .onConflictDoNothing();
+
+    return {
+      id: existing.id,
+      name: existing.name,
+      slug: existing.slug,
+      status: existing.status,
+      isCreated: false,
+    };
+  }
+
+  const canonical = SEED_MUSEUMS.find((m) => m.slug === slug);
+  const [created] = await dbClient
+    .insert(museums)
+    .values({
+      name: canonical?.name ?? name,
+      slug,
+      description: canonical?.description ?? name,
+      address: canonical?.address ?? '1000 Jefferson Dr SW',
+      city: canonical?.city ?? 'Washington',
+      status: options.newMuseumStatus ?? 'published',
+      createdBy: options.superadminId,
+    })
+    .returning({
+      id: museums.id,
+      name: museums.name,
+      slug: museums.slug,
+      status: museums.status,
+    });
+
+  await dbClient
+    .insert(museumAdmins)
+    .values({
+      museumId: created.id,
+      userId: options.superadminId,
+      status: 'active',
+      assignedBy: options.superadminId,
+    })
+    .onConflictDoNothing();
+
+  return {
+    id: created.id,
+    name: created.name,
+    slug: created.slug,
+    status: created.status,
+    isCreated: true,
+  };
+}
+
+/**
+ * Checks if a museum's draft or archived status hides published products from the Public Catalog API (404).
+ */
+export function checkCatalogVisibilityWarning(
+  museum: { name: string; status: 'draft' | 'published' | 'archived' },
+  productStatus: 'draft' | 'published' = 'published'
+): string | null {
+  if (
+    (museum.status === 'draft' || museum.status === 'archived') &&
+    productStatus === 'published'
+  ) {
+    return `[Warning] Bảo tàng "${museum.name}" đang ở trạng thái "${museum.status}". Theo hợp đồng API, các sản phẩm published sẽ bị ẩn khỏi Public Catalog API (404) cho đến khi bảo tàng được chuyển sang "published".`;
+  }
+  return null;
 }
 
 export async function main() {
