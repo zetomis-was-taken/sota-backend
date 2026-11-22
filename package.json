@@ -21,6 +21,9 @@
     "seed:smithsonian": "tsx scripts/seed-smithsonian.ts",
     "seed:superadmins": "tsx scripts/seed-superadmins.ts",
     "seed:museums": "tsx scripts/seed-museums.ts",
+    "admin:create-super": "tsx scripts/create-superadmin.ts",
+    "admin:create": "tsx scripts/create-admin.ts",
+    "admin:grant": "tsx scripts/grant-admin.ts",
     "typecheck:seed": "tsc --noEmit -p tsconfig.scripts.json"
   },
   "repository": {

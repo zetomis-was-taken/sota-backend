@@ -32,7 +32,7 @@ How authentication and authorization work in the **application-first** Express b
 - **Orders, items, invoices, payments, totals, and `entry_code`s** are written only by Express transactional services (`db.transaction(...)`). Never accept totals, `shipping_fee`, `payment_status`, or `entry_code` from clients.
 - **Invoices are immutable** — expose read-only endpoints only; never add update/delete routes.
 - **Secrets stay on the server:** `DATABASE_URL` and any `SUPABASE_S3_*` / `SUPABASE_SECRET_KEY` credentials exist only in server `.env`, never in frontend config.
-- **Admin provisioning** is SQL/seed work: grant `admin_user`, then insert/re-activate the `museum_admins` row. There is no app flow for it in this demo.
+- **Admin provisioning** is handled via administrative CLI scripts or SQL seeds: use `npm run admin:create-super` for super admins, `npm run admin:create` for new museum admins, and `npm run admin:grant` to promote existing users. There is no client-facing API endpoint for provisioning privileged roles in this demo.
 
 ## 4. Frontend
 
