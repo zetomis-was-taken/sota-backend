@@ -283,6 +283,12 @@ describe('Seed Souvenirs Script (scripts/seed-souvenirs.ts) - Phase 1 Fixtures',
             `mediaRights for SKU "${item.sku}" must match audited rights`
           ).toBe(audited.mediaRights);
 
+          // Reconcile mediaCredit with audited provenance record
+          expect(
+            item.mediaCredit,
+            `mediaCredit for SKU "${item.sku}" must match audited provenance credit`
+          ).toBe(audited.mediaCredit);
+
           // Prove that the actual source page metadata declares Public domain or CC0
           const validRawLicense =
             /public domain/i.test(audited.rawLicense) ||

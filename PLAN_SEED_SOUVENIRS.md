@@ -44,7 +44,7 @@ git status
    - **Tuyệt đối không dùng nhãn "Educational Fair Use":** Fair use là đánh giá pháp lý theo tình huống thực tế (dựa trên 4 yếu tố luật định của Hoa Kỳ), không phải giấy phép cấp quyền sao chép (theo [U.S. Copyright Office](https://www.copyright.gov/fair-use/more-info.html) và [Smithsonian Terms of Use](https://www.si.edu/termsofuse)).
    - Chỉ dùng ảnh có **quyền tái sử dụng minh bạch xác định theo từng asset** (Smithsonian Open Access CC0 media đã kiểm chứng, NASA Public Domain, Wikimedia Commons CC0).
    - Mỗi asset bắt buộc có `sourcePageUrl` (URL dẫn thẳng tới trang mô tả/hồ sơ bản quyền chính thức trên Wikimedia Commons, Smithsonian hoặc Library of Congress) để phục vụ kiểm tra và truy nguyên quyền sở hữu.
-   - Mỗi asset có credit/nguồn cụ thể trong metadata của fixture.
+   - Mỗi asset có credit/nguồn cụ thể trong metadata của fixture, được lưu trữ và đối soát 1:1 với snapshot manifest `scripts/fixtures/souvenir-media-provenance.json`.
    - Bất kỳ ảnh nào không xác định được quyền tái sử dụng minh bạch sẽ bị loại khỏi fixture.
 5. **Ràng buộc Schema, Tiền Tệ & Trạng Thái Mặc Định:**
    - `price`: Số tiền VND dương (`numeric(12, 2)`). Đa số sản phẩm phổ thông nằm trong dải **50.000 – 500.000 VND** (đúng theo ví dụ Issue #14); cho phép một số ít món đặc thù cao cấp (như bộ ấm chén gốm thủ công hoặc mô hình kim loại đúc) ở mức 800.000 – 1.200.000 VND.
@@ -54,7 +54,7 @@ git status
 
 ### Lệnh commit (Người dùng tự gõ):
 ```bash
-git add scripts/seed-souvenirs.ts tests/scripts/seed-souvenirs.test.ts
+git add scripts/seed-souvenirs.ts scripts/fixtures/souvenir-media-provenance.json tests/scripts/seed-souvenirs.test.ts
 git commit -m "feat(seed): define managed souvenir fixtures with verified media provenance"
 ```
 
