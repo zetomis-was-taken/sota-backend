@@ -20,6 +20,7 @@
     "db:studio": "drizzle-kit studio",
     "seed:smithsonian": "tsx scripts/seed-smithsonian.ts",
     "seed:superadmins": "tsx scripts/seed-superadmins.ts",
+    "seed:museums": "tsx scripts/seed-museums.ts",
     "typecheck:seed": "tsc --noEmit -p tsconfig.scripts.json"
   },
   "repository": {

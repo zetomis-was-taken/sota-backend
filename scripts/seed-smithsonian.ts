@@ -18,6 +18,7 @@ export interface ValidatedSmithsonianArtifact {
   sourceUrl: string | null;
   sourceRights: string;
   sourceCredit: string | null;
+  imageUrl?: string | null;
 }
 
 export interface SmithsonianFetchResult {
@@ -248,6 +249,31 @@ export function parseSmithsonianRecord(item: unknown): ValidatedSmithsonianArtif
     sourceCredit = descriptive.data_source.trim();
   }
 
+  // 8. Image URL
+  let imageUrl: string | null = null;
+  if (
+    descriptive &&
+    isRecord(descriptive.online_media) &&
+    Array.isArray(descriptive.online_media.media)
+  ) {
+    for (const m of descriptive.online_media.media) {
+      if (!isRecord(m)) continue;
+      if (typeof m.idsId === 'string' && m.idsId.trim()) {
+        imageUrl = `https://ids.si.edu/ids/deliveryService?id=${m.idsId.trim()}&max=800`;
+        break;
+      }
+      if (typeof m.content === 'string' && m.content.trim().startsWith('http')) {
+        const c = m.content.trim();
+        imageUrl = c.includes('ids.si.edu') && !c.includes('max=') ? `${c}&max=800` : c;
+        break;
+      }
+      if (typeof m.thumbnail === 'string' && m.thumbnail.trim().startsWith('http')) {
+        imageUrl = m.thumbnail.trim();
+        break;
+      }
+    }
+  }
+
   return {
     sourceId: rawId,
     name,
@@ -256,6 +282,7 @@ export function parseSmithsonianRecord(item: unknown): ValidatedSmithsonianArtif
     sourceUrl,
     sourceRights,
     sourceCredit,
+    imageUrl,
   };
 }
 
@@ -400,10 +427,19 @@ export async function seedSmithsonianArtifacts(
     records: ValidatedSmithsonianArtifact[];
     hitPageLimit?: boolean;
     targetCount?: number;
+    status?: 'draft' | 'published';
+    createdBy?: string | null;
   },
   dbClient = db
 ): Promise<SeedResult> {
-  const { museumId, records, hitPageLimit = false, targetCount = records.length } = params;
+  const {
+    museumId,
+    records,
+    hitPageLimit = false,
+    targetCount = records.length,
+    status = 'draft',
+    createdBy = null,
+  } = params;
 
   await verifyMuseumExists(museumId, dbClient);
 
@@ -419,7 +455,8 @@ export async function seedSmithsonianArtifacts(
         description: record.description,
         period: record.period,
         inventoryCode: null,
-        status: 'draft',
+        status,
+        createdBy,
         sourceSystem: 'smithsonian',
         sourceId: record.sourceId,
         sourceUrl: record.sourceUrl,
