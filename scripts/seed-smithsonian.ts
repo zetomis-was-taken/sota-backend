@@ -491,9 +491,10 @@ export async function runSeed(options: RunSeedOptions): Promise<SeedResult> {
  */
 export async function run(): Promise<void> {
   try {
+    const cliMuseumId = process.argv[2]?.trim();
     const config = validateSeedConfig({
       apiKey: process.env.SMITHSONIAN_API_KEY,
-      museumId: process.env.SEED_MUSEUM_ID,
+      museumId: cliMuseumId || process.env.SEED_MUSEUM_ID,
       nodeEnv: process.env.NODE_ENV,
       targetCount: 50,
     });
