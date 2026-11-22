@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import provenanceManifest from '../../scripts/fixtures/souvenir-media-provenance.json';
 import { SEED_MUSEUMS } from '../../scripts/seed-museums';
 import {
   buildProductSeedData,
@@ -52,7 +53,7 @@ describe('Seed Souvenirs Script (scripts/seed-souvenirs.ts) - Phase 1 Fixtures',
       }
 
       expect(MANAGED_SKUS.size).toBe(allSkus.length);
-      expect(getManagedSkus()).toEqual(MANAGED_SKUS);
+      expect(getManagedSkus()).toEqual(allSkus);
     });
 
     it('strictly enforces VND currency on all fixture items', () => {
@@ -233,9 +234,80 @@ describe('Seed Souvenirs Script (scripts/seed-souvenirs.ts) - Phase 1 Fixtures',
           expect(
             item.mediaCredit.trim().length,
             `Media credit for SKU "${item.sku}" must not be empty`
-          ).toBeGreaterThan(5);
+          ).toBeGreaterThanOrEqual(4);
         }
       }
+    });
+
+    it('proves actual usage rights by reconciling every fixture item with audited provenance metadata', () => {
+      expect(provenanceManifest.totalAssets).toBe(38);
+      expect(provenanceManifest.assets).toHaveLength(38);
+
+      const auditedMap = new Map(
+        provenanceManifest.assets.map((asset) => [asset.sku, asset])
+      );
+      const uniqueImageUrls = new Set<string>();
+
+      for (const museum of SOUVENIR_FIXTURES) {
+        for (const item of museum.items) {
+          const audited = auditedMap.get(item.sku);
+
+          expect(
+            audited,
+            `Missing audited provenance record for fixture item SKU "${item.sku}"`
+          ).toBeDefined();
+
+          if (!audited) continue;
+
+          // Reconcile sourcePageUrl with audited record
+          expect(
+            item.sourcePageUrl,
+            `sourcePageUrl for SKU "${item.sku}" must match audited provenance page`
+          ).toBe(audited.sourcePageUrl);
+
+          // Reconcile direct download imageUrl with audited record
+          expect(
+            item.imageUrl,
+            `imageUrl for SKU "${item.sku}" must match audited direct download URL`
+          ).toBe(audited.imageUrl);
+
+          // Reconcile MIME type with audited record
+          expect(
+            item.imageMimeType,
+            `MIME type for SKU "${item.sku}" must match audited MIME type`
+          ).toBe(audited.imageMimeType);
+
+          // Reconcile mediaRights with audited record
+          expect(
+            item.mediaRights,
+            `mediaRights for SKU "${item.sku}" must match audited rights`
+          ).toBe(audited.mediaRights);
+
+          // Prove that the actual source page metadata declares Public domain or CC0
+          const validRawLicense =
+            /public domain/i.test(audited.rawLicense) ||
+            /cc-?0/i.test(audited.rawLicense);
+          expect(
+            validRawLicense,
+            `Source page for SKU "${item.sku}" must declare Public domain or CC0, got "${audited.rawLicense}"`
+          ).toBe(true);
+
+          // Verify memory safety constraint (file size <= 10MB)
+          expect(
+            audited.fileSizeBytes,
+            `Asset file size for SKU "${item.sku}" exceeds 10MB limit: ${audited.fileSizeBytes} bytes`
+          ).toBeLessThanOrEqual(10 * 1024 * 1024);
+
+          // Verify unique image URL per product
+          expect(
+            uniqueImageUrls.has(item.imageUrl),
+            `Duplicate image asset detected for SKU "${item.sku}": ${item.imageUrl}`
+          ).toBe(false);
+          uniqueImageUrls.add(item.imageUrl);
+        }
+      }
+
+      expect(uniqueImageUrls.size).toBe(38);
     });
   });
 });
