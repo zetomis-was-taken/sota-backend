@@ -8,9 +8,13 @@ import {
   findOrCreateMuseum,
   getManagedSkus,
   MANAGED_SKUS,
+  parseCliArgs,
+  run,
   runStoragePreflight,
   SOUVENIR_FIXTURES,
+  validateSeedConfig,
   validateStorageConfig,
+  verifySuperadminExists,
 } from '../../scripts/seed-souvenirs';
 import { env } from '../../src/config/env';
 
@@ -617,6 +621,226 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       );
 
       expect(warning).toBeNull();
+    });
+  });
+
+  describe('CLI Arguments and Configuration Validation', () => {
+    it('parses --superadmin, --status, --clean, and --skip-media flags correctly', () => {
+      const args = [
+        '--superadmin',
+        '11111111-2222-4333-8444-555555555555',
+        '--status',
+        'draft',
+        '--clean',
+        '--skip-media',
+      ];
+      const parsed = parseCliArgs(args);
+
+      expect(parsed.superadminId).toBe('11111111-2222-4333-8444-555555555555');
+      expect(parsed.status).toBe('draft');
+      expect(parsed.clean).toBe(true);
+      expect(parsed.skipMedia).toBe(true);
+    });
+
+    it('parses short flags -s and --superadmin= format', () => {
+      const parsedShort = parseCliArgs(['-s', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee']);
+      expect(parsedShort.superadminId).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+
+      const parsedEqual = parseCliArgs(['--superadmin=bbbbbbbb-cccc-4ddd-8eee-ffffffffffff']);
+      expect(parsedEqual.superadminId).toBe('bbbbbbbb-cccc-4ddd-8eee-ffffffffffff');
+    });
+
+    it('throws when an invalid --status flag value is passed', () => {
+      expect(() => parseCliArgs(['--status', 'archived'])).toThrow(
+        /Invalid status "archived"/
+      );
+    });
+
+    it('rejects execution when NODE_ENV is production', () => {
+      expect(() =>
+        validateSeedConfig({
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          nodeEnv: 'production',
+        })
+      ).toThrow('Refusing to run seed script in production environment.');
+    });
+
+    it('rejects execution when superadmin ID is missing or invalid UUID', () => {
+      expect(() => validateSeedConfig({ superadminId: '' })).toThrow(
+        /Superadmin ID is required/
+      );
+
+      expect(() => validateSeedConfig({ superadminId: 'not-a-uuid' })).toThrow(
+        /Superadmin ID must be a valid UUID/
+      );
+    });
+
+    it('validates and applies defaults correctly', () => {
+      const config = validateSeedConfig({
+        superadminId: '11111111-2222-4333-8444-555555555555',
+      });
+
+      expect(config.status).toBe('published');
+      expect(config.clean).toBe(false);
+      expect(config.skipMedia).toBe(false);
+    });
+  });
+
+  describe('Superadmin Verification (verifySuperadminExists)', () => {
+    it('throws descriptive error if superadmin is not found in users table', async () => {
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]), // User not found
+            }),
+          }),
+        }),
+      };
+
+      await expect(
+        verifySuperadminExists('11111111-2222-4333-8444-555555555555', mockDb)
+      ).rejects.toThrow(/was not found in database.*seed:superadmins/);
+    });
+
+    it('warns if user exists in users table but lacks super_admin role', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const mockDb: any = {
+        select: vi.fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'valid-user-id' }]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]), // No super_admin role
+              }),
+            }),
+          }),
+      };
+
+      await verifySuperadminExists('valid-user-id', mockDb);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("does not have the 'super_admin' role")
+      );
+
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('Orchestration Pipeline Execution (run)', () => {
+    it('orchestrates storage preflight and verifies all 6 museums', async () => {
+      const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+        id: `00000000-0000-4000-8000-00000000000${idx}`,
+        name: m.museumName,
+        slug: m.museumSlug,
+        status: (idx === 0 ? 'draft' : 'published') as 'draft' | 'published',
+      }));
+
+      let callCount = 0;
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockImplementation(() => {
+                const item = fakeMuseums[callCount++];
+                return Promise.resolve(item ? [item] : []);
+              }),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      };
+
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn().mockResolvedValue({
+            data: { id: 'souvenir-media', name: 'souvenir-media', public: true },
+            error: null,
+          }),
+        },
+      };
+
+      const result = await run(
+        {
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          status: 'published',
+          clean: false,
+          skipMedia: false,
+        },
+        {
+          dbClient: mockDb,
+          storageClient: mockStorageClient,
+        }
+      );
+
+      expect(result.museums).toHaveLength(6);
+      expect(result.storagePreflight.skipped).toBe(false);
+      expect(result.storagePreflight.isPublic).toBe(true);
+      // Museum 0 is draft and product is published -> 1 warning
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toContain('draft');
+    });
+
+    it('orchestrates execution with skipMedia active', async () => {
+      let callCount = 0;
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockImplementation(() => {
+                const idx = callCount++;
+                return Promise.resolve([
+                  {
+                    id: `00000000-0000-4000-8000-00000000000${idx}`,
+                    name: `Museum ${idx}`,
+                    slug: `museum-${idx}`,
+                    status: 'published',
+                  },
+                ]);
+              }),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      };
+
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn(),
+        },
+      };
+
+      const result = await run(
+        {
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          status: 'published',
+          clean: false,
+          skipMedia: true,
+        },
+        {
+          dbClient: mockDb,
+          storageClient: mockStorageClient,
+        }
+      );
+
+      expect(result.museums).toHaveLength(6);
+      expect(result.storagePreflight.skipped).toBe(true);
+      expect(mockStorageClient.storage.getBucket).not.toHaveBeenCalled();
+      expect(result.warnings).toHaveLength(0);
     });
   });
 });

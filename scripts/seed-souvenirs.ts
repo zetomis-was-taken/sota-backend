@@ -1,9 +1,10 @@
 import 'dotenv/config';
-import { eq, or } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { env } from '../src/config/env';
-import { db } from '../src/db';
-import { museumAdmins, museums } from '../src/db/schema';
+import { closeDb, db } from '../src/db';
+import { museumAdmins, museums, userRoles, users } from '../src/db/schema';
 import { getSupabaseStorageClient } from '../src/lib/storage';
+import { uuidSchema } from '../src/lib/validation';
 import { SEED_MUSEUMS } from './seed-museums';
 
 export interface SouvenirFixtureItem {
@@ -785,8 +786,232 @@ export function checkCatalogVisibilityWarning(
   return null;
 }
 
+export interface SeedSouvenirsCliOptions {
+  superadminId?: string;
+  status?: 'draft' | 'published';
+  clean?: boolean;
+  skipMedia?: boolean;
+}
+
+export interface SeedSouvenirsConfig {
+  superadminId: string;
+  status: 'draft' | 'published';
+  clean: boolean;
+  skipMedia: boolean;
+}
+
+export interface SeedRunDependencies {
+  dbClient?: any;
+  storageClient?: any;
+}
+
+export interface SeedRunResult {
+  museums: MuseumRecordInfo[];
+  warnings: string[];
+  storagePreflight: StoragePreflightResult;
+}
+
+/**
+ * Parses command-line arguments for seed-souvenirs.
+ */
+export function parseCliArgs(
+  args: string[] = process.argv.slice(2)
+): SeedSouvenirsCliOptions {
+  const options: SeedSouvenirsCliOptions = {};
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--superadmin' || arg === '--superadmin-id' || arg === '-s') {
+      options.superadminId = args[++i]?.trim();
+    } else if (arg.startsWith('--superadmin=')) {
+      options.superadminId = arg.slice('--superadmin='.length).trim();
+    } else if (arg.startsWith('--superadmin-id=')) {
+      options.superadminId = arg.slice('--superadmin-id='.length).trim();
+    } else if (arg === '--status') {
+      const val = args[++i]?.trim();
+      if (val === 'draft' || val === 'published') {
+        options.status = val;
+      } else {
+        throw new Error(
+          `Invalid status "${val}". Allowed values: 'draft' | 'published'.`
+        );
+      }
+    } else if (arg.startsWith('--status=')) {
+      const val = arg.slice('--status='.length).trim();
+      if (val === 'draft' || val === 'published') {
+        options.status = val;
+      } else {
+        throw new Error(
+          `Invalid status "${val}". Allowed values: 'draft' | 'published'.`
+        );
+      }
+    } else if (arg === '--skip-media') {
+      options.skipMedia = true;
+    } else if (arg === '--clean') {
+      options.clean = true;
+    } else if (!arg.startsWith('-') && !options.superadminId) {
+      options.superadminId = arg.trim();
+    }
+  }
+
+  return options;
+}
+
+/**
+ * Validates configuration before database/network operations.
+ */
+export function validateSeedConfig(envConfig: {
+  superadminId?: string | null;
+  nodeEnv?: string | null;
+  status?: 'draft' | 'published';
+  clean?: boolean;
+  skipMedia?: boolean;
+}): SeedSouvenirsConfig {
+  const nodeEnv = envConfig.nodeEnv?.trim() || 'development';
+  if (nodeEnv === 'production') {
+    throw new Error('Refusing to run seed script in production environment.');
+  }
+
+  const rawSuperadminId = envConfig.superadminId?.trim();
+  if (!rawSuperadminId) {
+    throw new Error(
+      'Superadmin ID is required. Pass it via flag: --superadmin <uuid> (or -s <uuid>, or as first argument).'
+    );
+  }
+
+  const parseResult = uuidSchema.safeParse(rawSuperadminId);
+  if (!parseResult.success) {
+    throw new Error(
+      `Superadmin ID must be a valid UUID. Received: "${rawSuperadminId}"`
+    );
+  }
+
+  const status = envConfig.status === 'draft' ? 'draft' : 'published';
+
+  return {
+    superadminId: rawSuperadminId,
+    status,
+    clean: Boolean(envConfig.clean),
+    skipMedia: Boolean(envConfig.skipMedia),
+  };
+}
+
+/**
+ * Confirms superadmin exists in users table and verifies super_admin role.
+ */
+export async function verifySuperadminExists(
+  superadminId: string,
+  dbClient: any = db
+): Promise<void> {
+  const [user] = await dbClient
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, superadminId))
+    .limit(1);
+
+  if (!user) {
+    throw new Error(
+      `Superadmin user with ID "${superadminId}" was not found in database. Please run "npm run seed:superadmins" first or provide an existing user ID.`
+    );
+  }
+
+  const [role] = await dbClient
+    .select({ role: userRoles.role })
+    .from(userRoles)
+    .where(
+      and(
+        eq(userRoles.userId, superadminId),
+        eq(userRoles.role, 'super_admin')
+      )
+    )
+    .limit(1);
+
+  if (!role) {
+    console.warn(
+      `Notice: User "${superadminId}" is in users table but does not have the 'super_admin' role in user_roles.`
+    );
+  }
+}
+
+/**
+ * Executes the seed souvenirs orchestration pipeline.
+ */
+export async function run(
+  config: SeedSouvenirsConfig,
+  deps: SeedRunDependencies = {}
+): Promise<SeedRunResult> {
+  const dbClient = deps.dbClient ?? db;
+
+  console.log(
+    `[seed:souvenirs] Starting orchestration with status="${config.status}", skipMedia=${config.skipMedia}, clean=${config.clean}...`
+  );
+
+  // 1. Storage Preflight
+  const storagePreflight = await runStoragePreflight(
+    { skipMedia: config.skipMedia, bucketName: env.souvenirMediaBucket },
+    deps.storageClient
+  );
+
+  if (storagePreflight.skipped) {
+    console.log(
+      '[seed:souvenirs] Storage preflight skipped (--skip-media is active).'
+    );
+  } else {
+    console.log(
+      `[seed:souvenirs] Storage preflight verified: bucket "${storagePreflight.bucketName}" exists and is public.`
+    );
+  }
+
+  // 2. Discover/Create Museums & Check Visibility
+  const processedMuseums: MuseumRecordInfo[] = [];
+  const warnings: string[] = [];
+
+  for (const def of SOUVENIR_FIXTURES) {
+    const museum = await findOrCreateMuseum(
+      def,
+      {
+        superadminId: config.superadminId,
+        newMuseumStatus: config.status,
+      },
+      dbClient
+    );
+    processedMuseums.push(museum);
+
+    const warning = checkCatalogVisibilityWarning(museum, config.status);
+    if (warning) {
+      warnings.push(warning);
+      console.warn(`[seed:souvenirs] ${warning}`);
+    }
+  }
+
+  console.log(
+    `[seed:souvenirs] Verified ${processedMuseums.length} target Smithsonian museums.`
+  );
+
+  return {
+    museums: processedMuseums,
+    warnings,
+    storagePreflight,
+  };
+}
+
 export async function main() {
-  console.log('Seed souvenirs fixture loaded.');
+  const rawOptions = parseCliArgs();
+  const config = validateSeedConfig({
+    superadminId: rawOptions.superadminId,
+    status: rawOptions.status,
+    clean: rawOptions.clean,
+    skipMedia: rawOptions.skipMedia,
+    nodeEnv: process.env.NODE_ENV,
+  });
+
+  try {
+    await verifySuperadminExists(config.superadminId);
+    await run(config);
+  } finally {
+    await closeDb();
+  }
 }
 
 if (process.env.NODE_ENV !== 'test' && require.main === module) {
