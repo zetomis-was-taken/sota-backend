@@ -712,7 +712,8 @@ export async function findOrCreateMuseum(
     .limit(1);
 
   if (existing) {
-    // Preserve existing status without silently changing it
+    // Preserve existing museum status without silently changing it.
+    // Ensure superadmin has active membership (reactivate if previously revoked).
     await dbClient
       .insert(museumAdmins)
       .values({
@@ -721,7 +722,14 @@ export async function findOrCreateMuseum(
         status: 'active',
         assignedBy: options.superadminId,
       })
-      .onConflictDoNothing();
+      .onConflictDoUpdate({
+        target: [museumAdmins.museumId, museumAdmins.userId],
+        set: {
+          status: 'active',
+          revokedAt: null,
+          assignedBy: options.superadminId,
+        },
+      });
 
     return {
       id: existing.id,
@@ -751,6 +759,7 @@ export async function findOrCreateMuseum(
       status: museums.status,
     });
 
+  // Assign superadmin active membership for the new museum
   await dbClient
     .insert(museumAdmins)
     .values({
@@ -759,7 +768,14 @@ export async function findOrCreateMuseum(
       status: 'active',
       assignedBy: options.superadminId,
     })
-    .onConflictDoNothing();
+    .onConflictDoUpdate({
+      target: [museumAdmins.museumId, museumAdmins.userId],
+      set: {
+        status: 'active',
+        revokedAt: null,
+        assignedBy: options.superadminId,
+      },
+    });
 
   return {
     id: created.id,
@@ -972,7 +988,7 @@ export async function run(
       def,
       {
         superadminId: config.superadminId,
-        newMuseumStatus: config.status,
+        newMuseumStatus: 'published', // Always default newly created museums to 'published' independent of product status
       },
       dbClient
     );

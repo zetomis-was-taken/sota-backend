@@ -16,6 +16,7 @@ import {
   validateStorageConfig,
   verifySuperadminExists,
 } from '../../scripts/seed-souvenirs';
+import { museumAdmins } from '../../src/db/schema';
 import { env } from '../../src/config/env';
 
 describe('Seed Souvenirs Script (scripts/seed-souvenirs.ts) - Phase 1 Fixtures', () => {
@@ -455,7 +456,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
-            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue([]),
           }),
         }),
       };
@@ -505,7 +506,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           })
           .mockReturnValueOnce({
             values: vi.fn().mockReturnValue({
-              onConflictDoNothing: vi.fn().mockResolvedValue([]),
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
             }),
           }),
       };
@@ -559,7 +560,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           })
           .mockReturnValueOnce({
             values: vi.fn().mockReturnValue({
-              onConflictDoNothing: vi.fn().mockResolvedValue([]),
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
             }),
           }),
       };
@@ -579,6 +580,63 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       expect(result.status).toBe('draft');
       expect(result.isCreated).toBe(true);
       expect(insertedValues.status).toBe('draft');
+    });
+
+    it('guarantees active superadmin membership and reactivates revoked records via onConflictDoUpdate', async () => {
+      const fakeSuperadminId = '99999999-9999-4999-8999-999999999999';
+      const existingMuseum = {
+        id: '12345678-1234-4234-8234-123456789abc',
+        name: 'National Museum of Natural History',
+        slug: 'national-museum-of-natural-history',
+        status: 'published' as const,
+      };
+
+      const mockOnConflictDoUpdate = vi.fn().mockResolvedValue([]);
+      const mockValues = vi.fn().mockReturnValue({
+        onConflictDoUpdate: mockOnConflictDoUpdate,
+      });
+
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([existingMuseum]),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: mockValues,
+        }),
+      };
+
+      await findOrCreateMuseum(
+        {
+          museumSlug: 'national-museum-of-natural-history',
+          museumName: 'National Museum of Natural History',
+        },
+        {
+          superadminId: fakeSuperadminId,
+        },
+        mockDb
+      );
+
+      expect(mockValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          museumId: existingMuseum.id,
+          userId: fakeSuperadminId,
+          status: 'active',
+          assignedBy: fakeSuperadminId,
+        })
+      );
+
+      expect(mockOnConflictDoUpdate).toHaveBeenCalledWith({
+        target: [museumAdmins.museumId, museumAdmins.userId],
+        set: {
+          status: 'active',
+          revokedAt: null,
+          assignedBy: fakeSuperadminId,
+        },
+      });
     });
   });
 
@@ -756,7 +814,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
-            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue([]),
           }),
         }),
       };
@@ -813,7 +871,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
-            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue([]),
           }),
         }),
       };
@@ -840,6 +898,66 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       expect(result.museums).toHaveLength(6);
       expect(result.storagePreflight.skipped).toBe(true);
       expect(mockStorageClient.storage.getBucket).not.toHaveBeenCalled();
+      expect(result.warnings).toHaveLength(0);
+    });
+
+    it('creates museums with default published status even when running with --status draft', async () => {
+      const createdMuseum = {
+        id: '11111111-2222-4333-8444-555555555555',
+        name: 'National Museum of Natural History',
+        slug: 'national-museum-of-natural-history',
+        status: 'published' as const,
+      };
+
+      let insertedMuseumStatus: string | null = null;
+
+      const mockDb: any = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]), // Museum does not exist -> creates new
+            }),
+          }),
+        }),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((val) => {
+            if (val.slug) {
+              insertedMuseumStatus = val.status;
+            }
+            return {
+              returning: vi.fn().mockResolvedValue([createdMuseum]),
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            };
+          }),
+        })),
+      };
+
+      const mockStorageClient = {
+        storage: {
+          getBucket: vi.fn().mockResolvedValue({
+            data: { id: 'souvenir-media', name: 'souvenir-media', public: true },
+            error: null,
+          }),
+        },
+      };
+
+      const result = await run(
+        {
+          superadminId: '99999999-9999-4999-8999-999999999999',
+          status: 'draft', // Products should be draft
+          clean: false,
+          skipMedia: false,
+        },
+        {
+          dbClient: mockDb,
+          storageClient: mockStorageClient,
+        }
+      );
+
+      // Verify newly created museum was created with 'published' status, not product's 'draft'
+      expect(insertedMuseumStatus).toBe('published');
+      expect(result.museums[0].status).toBe('published');
+      // No visibility warning because published museums do not hide draft products
       expect(result.warnings).toHaveLength(0);
     });
   });
