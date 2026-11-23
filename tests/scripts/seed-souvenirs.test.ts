@@ -2658,4 +2658,336 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       });
     });
   });
+
+  describe('Seed Souvenirs Script - Phase 5 Strict Product Idempotency & Media Backfill', () => {
+    const createValidJpegBuffer = (length = 120): Buffer => {
+      const buf = Buffer.alloc(length, 0x20);
+      buf[0] = 0xff;
+      buf[1] = 0xd8;
+      buf[2] = 0xff;
+      return buf;
+    };
+
+    const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+      id: `00000000-0000-4000-8000-00000000000${idx}`,
+      name: m.museumName,
+      slug: m.museumSlug,
+      status: 'published' as const,
+    }));
+
+    const mockStorageClient = {
+      storage: {
+        getBucket: vi.fn().mockResolvedValue({
+          data: {
+            id: 'souvenir-media',
+            name: 'souvenir-media',
+            public: true,
+          },
+          error: null,
+        }),
+      },
+    };
+
+    it('is fully idempotent: repeat run skips product insertion and media upload without modifying existing data', async () => {
+      let museumCallCount = 0;
+      const updateSpy = vi.fn();
+      const uploadSpy = vi.fn();
+      const fetchSpy = vi.fn();
+
+      const mockDb: any = {
+        select: vi.fn().mockImplementation(() => ({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation(() => {
+              const wherePromise = Promise.resolve([]) as any;
+              wherePromise.limit = vi.fn().mockImplementation(() => {
+                if (museumCallCount < 6) {
+                  return Promise.resolve([fakeMuseums[museumCallCount++]]);
+                }
+                // Product lookup on conflict OR existing primary media check
+                return Promise.resolve([
+                  {
+                    id: 'existing-row-id',
+                    storagePath: 'existing/path/image.jpg',
+                  },
+                ]);
+              });
+              return wherePromise;
+            }),
+          }),
+        })),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            // Conflict occurs on insert for existing product -> returns empty
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        }),
+        update: updateSpy,
+      };
+
+      const result = await run(
+        {
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          status: 'published',
+          clean: false,
+          skipMedia: false,
+        },
+        {
+          dbClient: mockDb,
+          storageClient: mockStorageClient,
+          uploadMediaFn: uploadSpy,
+          fetchFn: fetchSpy,
+        }
+      );
+
+      expect(result.productsSummary.totalItems).toBe(38);
+      expect(result.productsSummary.createdCount).toBe(0);
+      expect(result.productsSummary.existingCount).toBe(38);
+      expect(result.mediaStats.uploadedCount).toBe(0);
+      expect(result.mediaStats.existingCount).toBe(38);
+      expect(result.mediaStats.errorCount).toBe(0);
+      expect(uploadSpy).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it('automatically backfills missing media for existing products without recreating products', async () => {
+      let museumCallCount = 0;
+      let isCheckingProduct = true;
+      const uploadSpy = vi.fn().mockResolvedValue(undefined);
+      const jpegBuffer = createValidJpegBuffer(150);
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+      });
+
+      const mediaInsertValuesSpy = vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'backfilled-media-id' }]),
+        }),
+      });
+
+      const mockDb: any = {
+        select: vi.fn().mockImplementation(() => ({
+          from: vi.fn().mockImplementation(() => ({
+            where: vi.fn().mockImplementation(() => {
+              const wherePromise = Promise.resolve([]) as any;
+              wherePromise.limit = vi.fn().mockImplementation(() => {
+                if (museumCallCount < 6) {
+                  return Promise.resolve([fakeMuseums[museumCallCount++]]);
+                }
+                // For product lookups on conflict -> return existing product
+                if (isCheckingProduct) {
+                  isCheckingProduct = false; // Next select call will be for media
+                  return Promise.resolve([{ id: 'existing-prod-id' }]);
+                }
+                // For media check -> return empty array (missing media, triggers backfill!)
+                isCheckingProduct = true; // Next select call will be for next product
+                return Promise.resolve([]);
+              });
+              return wherePromise;
+            }),
+          })),
+        })),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((val) => {
+            if (val.entityType === 'souvenir') {
+              return mediaInsertValuesSpy(val);
+            }
+            return {
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+              // Conflict on product insert
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([]),
+              }),
+            };
+          }),
+        })),
+      };
+
+      const result = await run(
+        {
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          status: 'published',
+          clean: false,
+          skipMedia: false,
+        },
+        {
+          dbClient: mockDb,
+          storageClient: mockStorageClient,
+          uploadMediaFn: uploadSpy,
+          fetchFn: fetchSpy,
+        }
+      );
+
+      expect(result.productsSummary.totalItems).toBe(38);
+      expect(result.productsSummary.createdCount).toBe(0);
+      expect(result.productsSummary.existingCount).toBe(38);
+      expect(result.mediaStats.uploadedCount).toBe(38);
+      expect(result.mediaStats.existingCount).toBe(0);
+      expect(result.mediaStats.errorCount).toBe(0);
+      expect(uploadSpy).toHaveBeenCalledTimes(38);
+
+      expect(mediaInsertValuesSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          entityType: 'souvenir',
+          entityId: 'existing-prod-id',
+          isPrimary: true,
+          createdBy: '11111111-2222-4333-8444-555555555555',
+        })
+      );
+    });
+
+    it('handles partial backfill when a subset of existing products lack media', async () => {
+      let museumCallCount = 0;
+      let productLookup = true;
+      let mediaCheckIndex = 0;
+      const uploadSpy = vi.fn().mockResolvedValue(undefined);
+      const jpegBuffer = createValidJpegBuffer(150);
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+      });
+
+      const mockDb: any = {
+        select: vi.fn().mockImplementation(() => ({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation(() => {
+              const wherePromise = Promise.resolve([]) as any;
+              wherePromise.limit = vi.fn().mockImplementation(() => {
+                if (museumCallCount < 6) {
+                  return Promise.resolve([fakeMuseums[museumCallCount++]]);
+                }
+                const idx = mediaCheckIndex++;
+                // First 20 items already have media; last 18 items lack media
+                if (idx < 20) {
+                  return Promise.resolve([
+                    { id: `media-${idx}`, storagePath: `path/${idx}.jpg` },
+                  ]);
+                }
+                return Promise.resolve([]); // Missing -> backfill
+              });
+              return wherePromise;
+            }),
+          }),
+        })),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((val) => {
+            if (val.entityType === 'souvenir') {
+              return {
+                onConflictDoNothing: vi.fn().mockReturnValue({
+                  returning: vi.fn().mockResolvedValue([{ id: 'backfilled-id' }]),
+                }),
+              };
+            }
+            return {
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'prod-id' }]),
+              }),
+            };
+          }),
+        })),
+      };
+
+      const result = await run(
+        {
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          status: 'published',
+          clean: false,
+          skipMedia: false,
+        },
+        {
+          dbClient: mockDb,
+          storageClient: mockStorageClient,
+          uploadMediaFn: uploadSpy,
+          fetchFn: fetchSpy,
+        }
+      );
+
+      expect(result.productsSummary.totalItems).toBe(38);
+      expect(result.mediaStats.uploadedCount).toBe(18);
+      expect(result.mediaStats.existingCount).toBe(20);
+      expect(uploadSpy).toHaveBeenCalledTimes(18);
+    });
+
+    it('preserves existing product data on conflict and never updates attributes', async () => {
+      const sampleItem = SOUVENIR_FIXTURES[0].items[0];
+      const updateSpy = vi.fn();
+
+      const mockDb: any = {
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]), // Conflict
+            }),
+          }),
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: 'preserved-prod-id',
+                  price: '999999.00', // Modified price in DB
+                  stockQuantity: 5,
+                },
+              ]),
+            }),
+          }),
+        }),
+        update: updateSpy,
+      };
+
+      const result = await upsertSouvenirProduct(
+        'mus-1',
+        sampleItem,
+        'published',
+        'superadmin-1',
+        mockDb
+      );
+
+      expect(result).toEqual({ id: 'preserved-prod-id', action: 'existing' });
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it('throws descriptive error if product insertion fails with conflict but SKU lookup returns empty', async () => {
+      const sampleItem = SOUVENIR_FIXTURES[0].items[0];
+
+      const mockDb: any = {
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]), // Conflict
+            }),
+          }),
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]), // Not found
+            }),
+          }),
+        }),
+      };
+
+      await expect(
+        upsertSouvenirProduct(
+          'mus-1',
+          sampleItem,
+          'published',
+          'superadmin-1',
+          mockDb
+        )
+      ).rejects.toThrow(
+        `Unexpected conflict when inserting product with SKU "${sampleItem.sku}" in museum "mus-1": no existing product found.`
+      );
+    });
+  });
 });
