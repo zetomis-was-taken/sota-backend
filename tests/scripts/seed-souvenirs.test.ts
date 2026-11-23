@@ -1056,6 +1056,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       expect(result.warnings).toHaveLength(0);
     });
   });
+});
 
   describe('Seed Souvenirs Script - Phase 3 Safe Scoped Clean & Foreign Key Pre-check', () => {
     describe('Environment & Database Allowlist Guard (assertSafeCleanEnvironment)', () => {
@@ -2618,7 +2619,9 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         consoleErrorSpy.mockRestore();
       });
     });
+  });
 
+  describe('Seed Souvenirs Script - Phase 6 CLI Entrypoint & Execution Orchestration', () => {
     describe('CLI Entrypoint & Process Exit Code (main)', () => {
       it('sets process.exitCode = 1 when run completes with mediaErrors > 0', async () => {
         const consoleErrorSpy = vi
@@ -3165,4 +3168,148 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       );
     });
   });
-});
+
+  describe('Seed Souvenirs Script - Phase 7 Comprehensive Test Suite Verification', () => {
+    it('throws when --status flag is supplied without a value at end of arguments', () => {
+      expect(() => parseCliArgs(['--status'])).toThrow(
+        /Invalid status "undefined". Allowed values: 'draft' | 'published'./
+      );
+    });
+
+    it('throws when --superadmin-id flag is supplied without a value at end of arguments', () => {
+      const parsed = parseCliArgs(['--superadmin-id']);
+      expect(() => validateSeedConfig(parsed)).toThrow(
+        /Superadmin ID is required. Pass it via flag: --superadmin <uuid>/
+      );
+    });
+
+    it('rejects --clean when NODE_ENV is test but DATABASE_URL host is a remote cloud instance', () => {
+      expect(() =>
+        assertSafeCleanEnvironment({
+          nodeEnv: 'test',
+          databaseUrl: 'postgresql://postgres:secret@db.test.cloud.com:5432/postgres',
+        })
+      ).toThrow(/is not in the local\/test allowlist/);
+    });
+
+    it('orchestrates clean and skip-media combined without attempting media bucket preflight or upload', async () => {
+      const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+        id: `00000000-0000-4000-8000-00000000000${idx}`,
+        name: m.museumName,
+        slug: m.museumSlug,
+        status: 'published' as const,
+      }));
+
+      let museumIdx = 0;
+      const deleteMediaSpy = vi.fn().mockResolvedValue(undefined);
+      const uploadMediaSpy = vi.fn().mockResolvedValue(undefined);
+      const fetchSpy = vi.fn();
+
+      const mockDb: any = {
+        select: vi.fn().mockImplementation(() => ({
+          from: vi.fn().mockImplementation(() => ({
+            where: vi.fn().mockImplementation(() => {
+              const wherePromise = Promise.resolve([]) as any;
+              wherePromise.limit = vi.fn().mockImplementation(() => {
+                if (museumIdx < 6) {
+                  return Promise.resolve([fakeMuseums[museumIdx++]]);
+                }
+                return Promise.resolve([]);
+              });
+              return wherePromise;
+            }),
+          })),
+        })),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'new-product-id' }]),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+        transaction: vi.fn().mockImplementation(async (cb: any) => {
+          const txMock: any = {
+            select: vi.fn().mockReturnValue({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+            delete: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+          };
+          return cb(txMock);
+        }),
+      };
+
+      const result = await run(
+        {
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          status: 'published',
+          clean: true,
+          skipMedia: true,
+        },
+        {
+          dbClient: mockDb,
+          deleteMediaFn: deleteMediaSpy,
+          uploadMediaFn: uploadMediaSpy,
+          fetchFn: fetchSpy,
+          nodeEnv: 'development',
+          databaseUrl: 'postgresql://postgres:pass@localhost:5432/postgres',
+        }
+      );
+
+      expect(result.storagePreflight.skipped).toBe(true);
+      expect(result.cleanSummary).toBeDefined();
+      expect(result.mediaStats.skippedCount).toBe(38);
+      expect(result.mediaStats.uploadedCount).toBe(0);
+      expect(uploadMediaSpy).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('validates all 38 fixture items across 6 museums have required attributes and valid price ranges', () => {
+      let totalItemCount = 0;
+      for (const museum of SOUVENIR_FIXTURES) {
+        expect(museum.items.length).toBeGreaterThanOrEqual(5);
+        expect(museum.items.length).toBeLessThanOrEqual(10);
+
+        for (const item of museum.items) {
+          totalItemCount++;
+          expect(item.name.trim().length).toBeGreaterThan(0);
+          expect(item.description.trim().length).toBeGreaterThanOrEqual(20);
+          expect(item.currency).toBe('VND');
+
+          const numPrice = Number(item.price);
+          expect(numPrice).toBeGreaterThanOrEqual(50000);
+          expect(numPrice).toBeLessThanOrEqual(1200000);
+
+          expect(item.stockQuantity).toBeGreaterThanOrEqual(20);
+          expect(item.stockQuantity).toBeLessThanOrEqual(100);
+
+          expect(item.imageUrl).toMatch(/^https:\/\//);
+        }
+      }
+      expect(totalItemCount).toBe(38);
+    });
+
+    it('validates provenance manifest coverage is 100% and matches fixtures 1:1', () => {
+      const manifestMap = new Map(
+        provenanceManifest.assets.map((item: any) => [item.sku, item])
+      );
+
+      for (const museum of SOUVENIR_FIXTURES) {
+        for (const item of museum.items) {
+          const entry: any = manifestMap.get(item.sku);
+          expect(entry).toBeDefined();
+          expect(entry.sourcePageUrl).toMatch(/^https:\/\//);
+          expect(
+            ['Public Domain', 'CC0'].includes(entry.mediaRights)
+          ).toBe(true);
+        }
+      }
+    });
+  });
