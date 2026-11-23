@@ -1946,6 +1946,54 @@ export async function run(
   };
 }
 
+/**
+ * Formats and prints an execution summary table and details to standard output.
+ */
+export function printSeedSummary(result: SeedRunResult): void {
+  console.log('\n=====================================================');
+  console.log('       SOUVENIR & MEDIA SEED EXECUTION SUMMARY       ');
+  console.log('=====================================================');
+  console.log(`Museums Processed (${result.museums?.length ?? 0}):`);
+  for (const m of result.museums ?? []) {
+    console.log(
+      `  - [${m.status?.toUpperCase() ?? 'UNKNOWN'}] ${m.name} (${m.slug})`
+    );
+  }
+
+  if (result.cleanSummary) {
+    console.log('\nClean Summary:');
+    console.log(
+      `  - Products deleted: ${result.cleanSummary.deletedProductsCount}`
+    );
+    console.log(
+      `  - Media deleted:    ${result.cleanSummary.deletedMediaCount}`
+    );
+  }
+
+  if (result.productsSummary) {
+    console.log('\nProducts Summary:');
+    console.log(`  - Created (new):    ${result.productsSummary.createdCount}`);
+    console.log(`  - Existing (kept):  ${result.productsSummary.existingCount}`);
+    console.log(`  - Total processed:  ${result.productsSummary.totalItems}`);
+  }
+
+  if (result.mediaStats) {
+    console.log('\nMedia Assets Summary:');
+    console.log(`  - Uploaded:         ${result.mediaStats.uploadedCount}`);
+    console.log(`  - Existing (kept):  ${result.mediaStats.existingCount}`);
+    console.log(`  - Skipped:          ${result.mediaStats.skippedCount}`);
+    console.log(`  - Errors:           ${result.mediaStats.errorCount}`);
+  }
+
+  if (result.warnings && result.warnings.length > 0) {
+    console.log('\nWarnings:');
+    for (const w of result.warnings) {
+      console.log(`  - ${w}`);
+    }
+  }
+  console.log('=====================================================\n');
+}
+
 export interface MainDependencies {
   runFn?: typeof run;
   verifySuperadminFn?: typeof verifySuperadminExists;
@@ -1958,7 +2006,7 @@ export async function main(
 ): Promise<SeedRunResult> {
   const rawOptions = parseCliArgs(args);
   const config = validateSeedConfig({
-    superadminId: rawOptions.superadminId,
+    superadminId: rawOptions.superadminId || process.env.SUPERADMIN_ID,
     status: rawOptions.status,
     clean: rawOptions.clean,
     skipMedia: rawOptions.skipMedia,
@@ -1977,6 +2025,8 @@ export async function main(
       databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
     });
 
+    printSeedSummary(result);
+
     if (result.mediaErrors > 0) {
       console.error(
         `[seed:souvenirs] Seeding finished with ${result.mediaErrors} media error(s). Setting exit code 1.`
@@ -1985,14 +2035,18 @@ export async function main(
     }
 
     return result;
+  } catch (error) {
+    const rawMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[seed:souvenirs] Fatal seed error: ${rawMsg}`);
+    process.exitCode = 1;
+    throw error;
   } finally {
     await closeFn();
   }
 }
 
 if (process.env.NODE_ENV !== 'test' && require.main === module) {
-  main().catch((err) => {
-    console.error('Fatal seed souvenirs error:', err);
+  main().catch(() => {
     process.exit(1);
   });
 }

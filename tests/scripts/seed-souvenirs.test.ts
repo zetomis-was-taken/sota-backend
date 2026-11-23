@@ -20,6 +20,7 @@ import {
   MIN_MEDIA_BYTES,
   parseCliArgs,
   precheckManagedSouvenirsForeignKeys,
+  printSeedSummary,
   processProductMedia,
   run,
   runStoragePreflight,
@@ -725,9 +726,26 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       expect(parsedEqual.superadminId).toBe('bbbbbbbb-cccc-4ddd-8eee-ffffffffffff');
     });
 
+    it('parses positional superadmin ID, --superadmin-id, and --status= format', () => {
+      const parsedPos = parseCliArgs(['11111111-2222-4333-8444-555555555555']);
+      expect(parsedPos.superadminId).toBe('11111111-2222-4333-8444-555555555555');
+
+      const parsedIdFlag = parseCliArgs(['--superadmin-id', '22222222-3333-4444-8555-666666666666']);
+      expect(parsedIdFlag.superadminId).toBe('22222222-3333-4444-8555-666666666666');
+
+      const parsedIdEqual = parseCliArgs(['--superadmin-id=33333333-4444-4555-8666-777777777777']);
+      expect(parsedIdEqual.superadminId).toBe('33333333-4444-4555-8666-777777777777');
+
+      const parsedStatusEqual = parseCliArgs(['--status=draft']);
+      expect(parsedStatusEqual.status).toBe('draft');
+    });
+
     it('throws when an invalid --status flag value is passed', () => {
       expect(() => parseCliArgs(['--status', 'archived'])).toThrow(
         /Invalid status "archived"/
+      );
+      expect(() => parseCliArgs(['--status=invalid'])).toThrow(
+        /Invalid status "invalid"/
       );
     });
 
@@ -738,6 +756,17 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           nodeEnv: 'production',
         })
       ).toThrow('Refusing to run seed script in production environment.');
+    });
+
+    it('triggers assertSafeCleanEnvironment during validateSeedConfig when clean is true', () => {
+      expect(() =>
+        validateSeedConfig({
+          superadminId: '11111111-2222-4333-8444-555555555555',
+          nodeEnv: 'development',
+          databaseUrl: 'postgres://user:pass@remote.supabase.co:5432/postgres',
+          clean: true,
+        })
+      ).toThrow(/Refusing to clean database: DATABASE_URL host/);
     });
 
     it('rejects execution when superadmin ID is missing or invalid UUID', () => {
@@ -2654,6 +2683,126 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           expect(process.exitCode).toBeUndefined();
         } finally {
           process.exitCode = prevExitCode;
+        }
+      });
+
+      it('falls back to process.env.SUPERADMIN_ID when no CLI superadmin flag is given', async () => {
+        const prevEnv = process.env.SUPERADMIN_ID;
+        process.env.SUPERADMIN_ID = '33333333-4444-4555-8666-777777777777';
+
+        try {
+          const verifySpy = vi.fn().mockResolvedValue(undefined);
+          const runSpy = vi.fn().mockResolvedValue({
+            museums: [],
+            warnings: [],
+            storagePreflight: { skipped: true, bucketName: 'souvenir-media', isPublic: true },
+            mediaStats: { uploadedCount: 0, skippedCount: 0, existingCount: 0, errorCount: 0 },
+            mediaErrors: 0,
+            productsSummary: { createdCount: 0, existingCount: 0, totalItems: 0 },
+          });
+
+          await main([], {
+            runFn: runSpy,
+            verifySuperadminFn: verifySpy,
+            closeDbFn: vi.fn().mockResolvedValue(undefined),
+          });
+
+          expect(verifySpy).toHaveBeenCalledWith('33333333-4444-4555-8666-777777777777');
+          expect(runSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+              superadminId: '33333333-4444-4555-8666-777777777777',
+            }),
+            expect.any(Object)
+          );
+        } finally {
+          process.env.SUPERADMIN_ID = prevEnv;
+        }
+      });
+
+      it('formats and prints execution summary output via printSeedSummary', () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+        try {
+          printSeedSummary({
+            museums: [
+              {
+                id: 'mus-1',
+                name: 'National Air and Space Museum',
+                slug: 'national-air-and-space-museum',
+                status: 'published',
+              },
+            ],
+            warnings: ['Sample visibility warning'],
+            storagePreflight: {
+              skipped: false,
+              bucketName: 'souvenir-media',
+              isPublic: true,
+            },
+            cleanSummary: {
+              deletedProductsCount: 5,
+              deletedMediaCount: 5,
+            },
+            mediaStats: {
+              uploadedCount: 6,
+              skippedCount: 1,
+              existingCount: 2,
+              errorCount: 0,
+            },
+            mediaErrors: 0,
+            productsSummary: {
+              createdCount: 6,
+              existingCount: 2,
+              totalItems: 8,
+            },
+          });
+
+          expect(logSpy).toHaveBeenCalledWith(
+            expect.stringContaining('SOUVENIR & MEDIA SEED EXECUTION SUMMARY')
+          );
+          expect(logSpy).toHaveBeenCalledWith(
+            expect.stringContaining('National Air and Space Museum')
+          );
+          expect(logSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Products deleted: 5')
+          );
+          expect(logSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Created (new):    6')
+          );
+          expect(logSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Uploaded:         6')
+          );
+          expect(logSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Sample visibility warning')
+          );
+        } finally {
+          logSpy.mockRestore();
+        }
+      });
+
+      it('catches fatal errors in main, sets process.exitCode = 1, calls closeDb, and rethrows', async () => {
+        const prevExitCode = process.exitCode;
+        process.exitCode = undefined;
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const closeDbSpy = vi.fn().mockResolvedValue(undefined);
+
+        try {
+          const failingVerify = vi.fn().mockRejectedValue(new Error('User not found in database'));
+
+          await expect(
+            main(['--superadmin', '11111111-2222-4333-8444-555555555555'], {
+              verifySuperadminFn: failingVerify,
+              closeDbFn: closeDbSpy,
+            })
+          ).rejects.toThrow('User not found in database');
+
+          expect(process.exitCode).toBe(1);
+          expect(consoleErrorSpy).toHaveBeenCalledWith(
+            expect.stringContaining('[seed:souvenirs] Fatal seed error: User not found in database')
+          );
+          expect(closeDbSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          process.exitCode = prevExitCode;
+          consoleErrorSpy.mockRestore();
         }
       });
     });
