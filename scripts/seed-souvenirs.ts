@@ -12,8 +12,14 @@ import {
   userRoles,
   users,
 } from '../src/db/schema';
-import { deleteMedia, getSupabaseStorageClient } from '../src/lib/storage';
+import {
+  buildStoragePath,
+  deleteMedia,
+  getSupabaseStorageClient,
+  uploadMedia,
+} from '../src/lib/storage';
 import { uuidSchema } from '../src/lib/validation';
+import { detectMimeType } from '../src/services/media';
 import { SEED_MUSEUMS } from './seed-museums';
 
 export interface SouvenirFixtureItem {
@@ -1158,6 +1164,352 @@ export async function cleanExistingManagedSouvenirs(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4: Memory-Guarded Media Fetch, Validation, and Storage Upload
+// ---------------------------------------------------------------------------
+
+export const MAX_MEDIA_BYTES = 10 * 1024 * 1024; // 10 MB limit
+export const MIN_MEDIA_BYTES = 100; // Minimum 100 bytes
+
+export const ALLOWED_SOUVENIR_IMAGE_MIMES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+] as const;
+
+export type AllowedSouvenirImageMime =
+  (typeof ALLOWED_SOUVENIR_IMAGE_MIMES)[number];
+
+const EXTENSION_BY_MIME: Record<AllowedSouvenirImageMime, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+};
+
+export interface ValidatedMediaResult {
+  buffer: Buffer;
+  mimeType: AllowedSouvenirImageMime;
+  extension: string;
+  size: number;
+}
+
+/**
+ * Downloads media from URL with strict memory guard (<= 10MB) and validates image MIME type via magic bytes.
+ */
+export async function fetchAndValidateMedia(
+  url: string,
+  options: {
+    fetchFn?: typeof fetch;
+    signal?: AbortSignal;
+  } = {}
+): Promise<ValidatedMediaResult> {
+  const fetcher = options.fetchFn ?? fetch;
+
+  let response: Response;
+  try {
+    response = await fetcher(url, {
+      headers: {
+        'User-Agent':
+          'SotaSouvenirSeeder/1.0 (https://github.com/zetomis-was-taken/sota-backend)',
+        Accept: 'image/jpeg,image/png,image/webp,*/*',
+      },
+      signal: options.signal,
+    });
+  } catch (err: any) {
+    throw new Error(
+      `Failed to fetch media from "${url}": ${err?.message || 'Network error'}`
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch media from "${url}": HTTP ${response.status} ${response.statusText}`
+    );
+  }
+
+  // 1. Upfront content-length header check
+  const contentLengthHeader = response.headers.get('content-length');
+  if (contentLengthHeader) {
+    const contentLength = parseInt(contentLengthHeader, 10);
+    if (!Number.isNaN(contentLength) && contentLength > MAX_MEDIA_BYTES) {
+      throw new Error(
+        `Media size (${contentLength} bytes) exceeds maximum allowed limit of ${MAX_MEDIA_BYTES} bytes (10 MB).`
+      );
+    }
+  }
+
+  // 2. Stream chunk accumulation with memory guard
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          totalBytes += value.byteLength;
+          if (totalBytes > MAX_MEDIA_BYTES) {
+            try {
+              await reader.cancel();
+            } catch {}
+            throw new Error(
+              `Media size exceeded maximum allowed limit of ${MAX_MEDIA_BYTES} bytes (10 MB) during download.`
+            );
+          }
+          chunks.push(Buffer.from(value));
+        }
+      }
+    } catch (err) {
+      try {
+        await reader.cancel();
+      } catch {}
+      throw err;
+    }
+  } else if (
+    response.body &&
+    typeof (response.body as any)[Symbol.asyncIterator] === 'function'
+  ) {
+    for await (const chunk of response.body as any) {
+      const bufChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += bufChunk.length;
+      if (totalBytes > MAX_MEDIA_BYTES) {
+        throw new Error(
+          `Media size exceeded maximum allowed limit of ${MAX_MEDIA_BYTES} bytes (10 MB) during download.`
+        );
+      }
+      chunks.push(bufChunk);
+    }
+  } else {
+    const arrayBuf = await response.arrayBuffer();
+    if (arrayBuf.byteLength > MAX_MEDIA_BYTES) {
+      throw new Error(
+        `Media size (${arrayBuf.byteLength} bytes) exceeds maximum allowed limit of ${MAX_MEDIA_BYTES} bytes (10 MB).`
+      );
+    }
+    chunks.push(Buffer.from(arrayBuf));
+  }
+
+  const buffer = Buffer.concat(chunks);
+
+  // 3. Minimum buffer length check (guard against empty or truncated response)
+  if (buffer.length < MIN_MEDIA_BYTES) {
+    throw new Error(
+      `Media size (${buffer.length} bytes) is below minimum allowed limit of ${MIN_MEDIA_BYTES} bytes.`
+    );
+  }
+
+  // 4. Magic-byte MIME type inspection
+  const detectedMime = detectMimeType(buffer);
+  if (
+    !detectedMime ||
+    !ALLOWED_SOUVENIR_IMAGE_MIMES.includes(
+      detectedMime as AllowedSouvenirImageMime
+    )
+  ) {
+    throw new Error(
+      `Unsupported media format for souvenir image: detected "${
+        detectedMime || 'unknown'
+      }". Allowed formats: image/jpeg, image/png, image/webp.`
+    );
+  }
+
+  const mimeType = detectedMime as AllowedSouvenirImageMime;
+  const extension = EXTENSION_BY_MIME[mimeType];
+
+  return {
+    buffer,
+    mimeType,
+    extension,
+    size: buffer.length,
+  };
+}
+
+export interface UploadAndInsertMediaParams {
+  museumId: string;
+  productId: string;
+  imageUrl: string;
+  superadminId: string;
+  bucketName?: string;
+}
+
+export interface UploadAndInsertMediaDependencies {
+  fetchFn?: typeof fetch;
+  uploadMediaFn?: (
+    bucket: string,
+    storagePath: string,
+    buffer: Buffer,
+    mimeType: string
+  ) => Promise<void>;
+  deleteMediaFn?: (bucket: string, storagePath: string) => Promise<void>;
+  dbClient?: any;
+}
+
+export interface UploadAndInsertMediaResult {
+  created: boolean;
+  storagePath: string;
+  mediaId: string | null;
+}
+
+/**
+ * Downloads image, uploads to Supabase Storage with canonical path, inserts media_assets row,
+ * and performs best-effort cleanup of orphan storage object if DB insert fails.
+ */
+export async function uploadAndInsertSouvenirMedia(
+  params: UploadAndInsertMediaParams,
+  deps: UploadAndInsertMediaDependencies = {}
+): Promise<UploadAndInsertMediaResult> {
+  const bucketName =
+    params.bucketName || env.souvenirMediaBucket || 'souvenir-media';
+  const uploadFn = deps.uploadMediaFn ?? uploadMedia;
+  const deleteFn = deps.deleteMediaFn ?? deleteMedia;
+  const dbClient = deps.dbClient ?? db;
+
+  // 1. Fetch and validate binary data
+  const validated = await fetchAndValidateMedia(params.imageUrl, {
+    fetchFn: deps.fetchFn,
+  });
+
+  // 2. Build unguessable canonical storage path
+  const storagePath = buildStoragePath(
+    params.museumId,
+    'souvenir',
+    params.productId,
+    validated.extension
+  );
+
+  // 3. Upload to storage
+  await uploadFn(bucketName, storagePath, validated.buffer, validated.mimeType);
+
+  // 4. Insert into media_assets table
+  let mediaRow: { id: string } | undefined;
+  try {
+    const inserted = await dbClient
+      .insert(mediaAssets)
+      .values({
+        museumId: params.museumId,
+        entityType: 'souvenir',
+        entityId: params.productId,
+        mediaType: 'image',
+        storageBucket: bucketName,
+        storagePath,
+        mimeType: validated.mimeType,
+        sortOrder: 0,
+        isPrimary: true,
+        createdBy: params.superadminId,
+      })
+      .onConflictDoNothing()
+      .returning({ id: mediaAssets.id });
+
+    mediaRow = inserted[0];
+  } catch (dbError) {
+    console.warn(
+      `[seed:souvenirs] DB insert failed for product "${params.productId}". Cleaning up orphan storage object at "${storagePath}"...`
+    );
+    await deleteFn(bucketName, storagePath);
+    throw dbError;
+  }
+
+  if (!mediaRow) {
+    console.warn(
+      `[seed:souvenirs] No media asset row inserted for product "${params.productId}". Cleaning up orphan storage object at "${storagePath}"...`
+    );
+    await deleteFn(bucketName, storagePath);
+    return {
+      created: false,
+      storagePath,
+      mediaId: null,
+    };
+  }
+
+  return {
+    created: true,
+    storagePath,
+    mediaId: mediaRow.id,
+  };
+}
+
+/**
+ * Checks if a primary media asset already exists for the given souvenir product.
+ */
+export async function getExistingPrimaryMedia(
+  productId: string,
+  dbClient: any = db
+): Promise<{ id: string; storagePath: string } | null> {
+  const [existing] = await dbClient
+    .select({
+      id: mediaAssets.id,
+      storagePath: mediaAssets.storagePath,
+    })
+    .from(mediaAssets)
+    .where(
+      and(
+        eq(mediaAssets.entityType, 'souvenir'),
+        eq(mediaAssets.entityId, productId),
+        eq(mediaAssets.isPrimary, true)
+      )
+    )
+    .limit(1);
+
+  return existing ?? null;
+}
+
+export interface ProcessProductMediaParams {
+  museumId: string;
+  productId: string;
+  imageUrl: string;
+  superadminId: string;
+  skipMedia?: boolean;
+  bucketName?: string;
+}
+
+export interface ProcessProductMediaResult {
+  status: 'created' | 'skipped' | 'existing';
+  storagePath?: string;
+  mediaId?: string;
+}
+
+/**
+ * High-level media processor: checks existing primary media, respects skipMedia,
+ * or invokes uploadAndInsertSouvenirMedia.
+ */
+export async function processProductMedia(
+  params: ProcessProductMediaParams,
+  deps: UploadAndInsertMediaDependencies = {}
+): Promise<ProcessProductMediaResult> {
+  if (params.skipMedia) {
+    return { status: 'skipped' };
+  }
+
+  const dbClient = deps.dbClient ?? db;
+  const existing = await getExistingPrimaryMedia(params.productId, dbClient);
+  if (existing) {
+    return {
+      status: 'existing',
+      storagePath: existing.storagePath,
+      mediaId: existing.id,
+    };
+  }
+
+  const res = await uploadAndInsertSouvenirMedia(
+    {
+      museumId: params.museumId,
+      productId: params.productId,
+      imageUrl: params.imageUrl,
+      superadminId: params.superadminId,
+      bucketName: params.bucketName,
+    },
+    deps
+  );
+
+  return {
+    status: res.created ? 'created' : 'skipped',
+    storagePath: res.storagePath,
+    mediaId: res.mediaId ?? undefined,
+  };
+}
+
 export interface SeedSouvenirsCliOptions {
   superadminId?: string;
   status?: 'draft' | 'published';
@@ -1178,6 +1530,13 @@ export interface SeedRunDependencies {
   deleteMediaFn?: (bucket: string, path: string) => Promise<void>;
   nodeEnv?: string | null;
   databaseUrl?: string | null;
+  fetchFn?: typeof fetch;
+  uploadMediaFn?: (
+    bucket: string,
+    storagePath: string,
+    buffer: Buffer,
+    mimeType: string
+  ) => Promise<void>;
 }
 
 export interface SeedRunResult {

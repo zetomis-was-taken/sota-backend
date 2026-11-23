@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import provenanceManifest from '../../scripts/fixtures/souvenir-media-provenance.json';
 import { SEED_MUSEUMS } from '../../scripts/seed-museums';
 import {
+  ALLOWED_SOUVENIR_IMAGE_MIMES,
   assertSafeCleanEnvironment,
   buildProductSeedData,
   checkCatalogVisibilityWarning,
@@ -9,14 +10,20 @@ import {
   checkStorageBucketPreflight,
   cleanAllManagedSouvenirs,
   cleanExistingManagedSouvenirs,
+  fetchAndValidateMedia,
   findOrCreateMuseum,
+  getExistingPrimaryMedia,
   getManagedSkus,
   MANAGED_SKUS,
+  MAX_MEDIA_BYTES,
+  MIN_MEDIA_BYTES,
   parseCliArgs,
   precheckManagedSouvenirsForeignKeys,
+  processProductMedia,
   run,
   runStoragePreflight,
   SOUVENIR_FIXTURES,
+  uploadAndInsertSouvenirMedia,
   validateSeedConfig,
   validateStorageConfig,
   verifySuperadminExists,
@@ -1652,6 +1659,535 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           deletedProductsCount: 0,
           deletedMediaCount: 0,
         });
+      });
+    });
+  });
+
+  describe('Seed Souvenirs Script - Phase 4 Media Processing & Storage Upload', () => {
+    const createValidJpegBuffer = (length = 120): Buffer => {
+      const buf = Buffer.alloc(length, 0x20);
+      buf[0] = 0xff;
+      buf[1] = 0xd8;
+      buf[2] = 0xff;
+      return buf;
+    };
+
+    const createValidPngBuffer = (length = 120): Buffer => {
+      const buf = Buffer.alloc(length, 0x20);
+      const header = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+      for (let i = 0; i < header.length; i++) buf[i] = header[i];
+      return buf;
+    };
+
+    const createValidWebpBuffer = (length = 120): Buffer => {
+      const buf = Buffer.alloc(length, 0x20);
+      buf.write('RIFF', 0, 'ascii');
+      buf.write('WEBP', 8, 'ascii');
+      return buf;
+    };
+
+    const createMp4Buffer = (length = 120): Buffer => {
+      const buf = Buffer.alloc(length, 0x20);
+      buf.write('ftyp', 4, 'ascii');
+      return buf;
+    };
+
+    describe('Media Download & Memory Guard (fetchAndValidateMedia)', () => {
+      it('throws error when fetch throws network error', async () => {
+        const mockFetch = vi
+          .fn()
+          .mockRejectedValue(new Error('connection timeout'));
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/image.jpg', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(/Failed to fetch media from.*connection timeout/);
+      });
+
+      it('throws error when HTTP response status is not ok', async () => {
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          headers: new Headers(),
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/missing.jpg', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(/Failed to fetch media from.*HTTP 404 Not Found/);
+      });
+
+      it('aborts fast when content-length header exceeds 10 MB limit', async () => {
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            'content-length': String(15 * 1024 * 1024), // 15 MB
+          }),
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/giant.jpg', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(
+          /Media size \(15728640 bytes\) exceeds maximum allowed limit/
+        );
+      });
+
+      it('aborts stream when accumulated chunks exceed 10 MB during download', async () => {
+        const cancelSpy = vi.fn().mockResolvedValue(undefined);
+        let readCount = 0;
+
+        // Mock readable stream with two 6MB chunks -> exceeds 10MB on 2nd chunk
+        const mockReader = {
+          read: vi.fn().mockImplementation(() => {
+            readCount++;
+            if (readCount === 1) {
+              return Promise.resolve({
+                done: false,
+                value: new Uint8Array(6 * 1024 * 1024),
+              });
+            }
+            if (readCount === 2) {
+              return Promise.resolve({
+                done: false,
+                value: new Uint8Array(6 * 1024 * 1024),
+              });
+            }
+            return Promise.resolve({ done: true, value: undefined });
+          }),
+          cancel: cancelSpy,
+        };
+
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          body: {
+            getReader: () => mockReader,
+          },
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/stream-huge.jpg', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(
+          /Media size exceeded maximum allowed limit of 10485760 bytes \(10 MB\) during download/
+        );
+
+        expect(cancelSpy).toHaveBeenCalled();
+      });
+
+      it('rejects when downloaded buffer is below 100 bytes minimum', async () => {
+        const tinyBuffer = createValidJpegBuffer(50);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(tinyBuffer.buffer),
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/tiny.jpg', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(
+          /Media size \(50 bytes\) is below minimum allowed limit of 100 bytes/
+        );
+      });
+
+      it('rejects unsupported media format (e.g. video/mp4)', async () => {
+        const mp4Buffer = createMp4Buffer(120);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(mp4Buffer.buffer),
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/sample.mp4', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(
+          /Unsupported media format for souvenir image: detected "video\/mp4"/
+        );
+      });
+
+      it('rejects plain text or corrupted binary without recognizable image magic bytes', async () => {
+        const plainTextBuffer = Buffer.from(
+          '<html><body>404 Not Found HTML page</body></html>'.repeat(4)
+        );
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(plainTextBuffer.buffer),
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/corrupt.jpg', {
+            fetchFn: mockFetch as any,
+          })
+        ).rejects.toThrow(
+          /Unsupported media format for souvenir image: detected "unknown"/
+        );
+      });
+
+      it('successfully downloads and validates JPEG image', async () => {
+        const jpegBuffer = createValidJpegBuffer(150);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+        });
+
+        const result = await fetchAndValidateMedia(
+          'https://example.com/photo.jpg',
+          {
+            fetchFn: mockFetch as any,
+          }
+        );
+
+        expect(result.mimeType).toBe('image/jpeg');
+        expect(result.extension).toBe('.jpg');
+        expect(result.size).toBe(150);
+        expect(result.buffer).toBeInstanceOf(Buffer);
+      });
+
+      it('successfully downloads and validates PNG image', async () => {
+        const pngBuffer = createValidPngBuffer(200);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(pngBuffer.buffer),
+        });
+
+        const result = await fetchAndValidateMedia(
+          'https://example.com/graphic.png',
+          {
+            fetchFn: mockFetch as any,
+          }
+        );
+
+        expect(result.mimeType).toBe('image/png');
+        expect(result.extension).toBe('.png');
+        expect(result.size).toBe(200);
+      });
+
+      it('successfully downloads and validates WebP image', async () => {
+        const webpBuffer = createValidWebpBuffer(180);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(webpBuffer.buffer),
+        });
+
+        const result = await fetchAndValidateMedia(
+          'https://example.com/modern.webp',
+          {
+            fetchFn: mockFetch as any,
+          }
+        );
+
+        expect(result.mimeType).toBe('image/webp');
+        expect(result.extension).toBe('.webp');
+        expect(result.size).toBe(180);
+      });
+    });
+
+    describe('Storage Upload & Media Assets DB Insert (uploadAndInsertSouvenirMedia)', () => {
+      it('uploads validated media to storage and inserts media_assets record', async () => {
+        const jpegBuffer = createValidJpegBuffer(150);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+        });
+
+        const uploadSpy = vi.fn().mockResolvedValue(undefined);
+        const insertSpy = vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'media-row-1' }]),
+            }),
+          }),
+        });
+
+        const mockDb: any = { insert: insertSpy };
+
+        const result = await uploadAndInsertSouvenirMedia(
+          {
+            museumId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+            productId: 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22',
+            imageUrl: 'https://example.com/valid.jpg',
+            superadminId: 'c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a33',
+            bucketName: 'souvenir-media',
+          },
+          {
+            fetchFn: mockFetch as any,
+            uploadMediaFn: uploadSpy,
+            dbClient: mockDb,
+          }
+        );
+
+        expect(result.created).toBe(true);
+        expect(result.mediaId).toBe('media-row-1');
+        expect(result.storagePath).toMatch(
+          /^a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11\/souvenir\/b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22\/[a-f0-9]+\.jpg$/
+        );
+
+        expect(uploadSpy).toHaveBeenCalledWith(
+          'souvenir-media',
+          result.storagePath,
+          expect.any(Buffer),
+          'image/jpeg'
+        );
+      });
+
+      it('cleans up orphan storage object via deleteMediaFn when DB insert throws error', async () => {
+        const jpegBuffer = createValidJpegBuffer(150);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+        });
+
+        const uploadSpy = vi.fn().mockResolvedValue(undefined);
+        const deleteSpy = vi.fn().mockResolvedValue(undefined);
+
+        const insertSpy = vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi
+                .fn()
+                .mockRejectedValue(new Error('DB connection failed')),
+            }),
+          }),
+        });
+
+        const mockDb: any = { insert: insertSpy };
+
+        await expect(
+          uploadAndInsertSouvenirMedia(
+            {
+              museumId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+              productId: 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22',
+              imageUrl: 'https://example.com/valid.jpg',
+              superadminId: 'c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a33',
+              bucketName: 'souvenir-media',
+            },
+            {
+              fetchFn: mockFetch as any,
+              uploadMediaFn: uploadSpy,
+              deleteMediaFn: deleteSpy,
+              dbClient: mockDb,
+            }
+          )
+        ).rejects.toThrow('DB connection failed');
+
+        expect(uploadSpy).toHaveBeenCalledTimes(1);
+        expect(deleteSpy).toHaveBeenCalledTimes(1);
+        expect(deleteSpy).toHaveBeenCalledWith(
+          'souvenir-media',
+          expect.stringMatching(
+            /^a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11\/souvenir\/b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22\//
+          )
+        );
+      });
+
+      it('cleans up orphan storage object when DB insert returns empty on conflict', async () => {
+        const jpegBuffer = createValidJpegBuffer(150);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+        });
+
+        const uploadSpy = vi.fn().mockResolvedValue(undefined);
+        const deleteSpy = vi.fn().mockResolvedValue(undefined);
+
+        const insertSpy = vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]), // No row inserted
+            }),
+          }),
+        });
+
+        const mockDb: any = { insert: insertSpy };
+
+        const result = await uploadAndInsertSouvenirMedia(
+          {
+            museumId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+            productId: 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22',
+            imageUrl: 'https://example.com/valid.jpg',
+            superadminId: 'c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a33',
+            bucketName: 'souvenir-media',
+          },
+          {
+            fetchFn: mockFetch as any,
+            uploadMediaFn: uploadSpy,
+            deleteMediaFn: deleteSpy,
+            dbClient: mockDb,
+          }
+        );
+
+        expect(result.created).toBe(false);
+        expect(result.mediaId).toBeNull();
+        expect(deleteSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('Primary Media Detection and High-Level Processor', () => {
+      it('returns existing primary media from database when present', async () => {
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: 'media-existing',
+                    storagePath: 'mus-1/souvenir/prod-1/file.jpg',
+                  },
+                ]),
+              }),
+            }),
+          }),
+        };
+
+        const result = await getExistingPrimaryMedia('prod-1', mockDb);
+        expect(result).toEqual({
+          id: 'media-existing',
+          storagePath: 'mus-1/souvenir/prod-1/file.jpg',
+        });
+      });
+
+      it('returns null when no existing primary media is found in database', async () => {
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        };
+
+        const result = await getExistingPrimaryMedia('prod-1', mockDb);
+        expect(result).toBeNull();
+      });
+
+      it('processProductMedia returns status skipped when skipMedia is true', async () => {
+        const uploadSpy = vi.fn();
+        const result = await processProductMedia(
+          {
+            museumId: 'mus-1',
+            productId: 'prod-1',
+            imageUrl: 'https://example.com/image.jpg',
+            superadminId: 'admin-1',
+            skipMedia: true,
+          },
+          { uploadMediaFn: uploadSpy }
+        );
+
+        expect(result.status).toBe('skipped');
+        expect(uploadSpy).not.toHaveBeenCalled();
+      });
+
+      it('processProductMedia returns status existing without uploading when primary media already exists', async () => {
+        const uploadSpy = vi.fn();
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: 'media-existing',
+                    storagePath: 'mus-1/souvenir/prod-1/file.jpg',
+                  },
+                ]),
+              }),
+            }),
+          }),
+        };
+
+        const result = await processProductMedia(
+          {
+            museumId: 'mus-1',
+            productId: 'prod-1',
+            imageUrl: 'https://example.com/image.jpg',
+            superadminId: 'admin-1',
+            skipMedia: false,
+          },
+          {
+            dbClient: mockDb,
+            uploadMediaFn: uploadSpy,
+          }
+        );
+
+        expect(result.status).toBe('existing');
+        expect(result.mediaId).toBe('media-existing');
+        expect(result.storagePath).toBe('mus-1/souvenir/prod-1/file.jpg');
+        expect(uploadSpy).not.toHaveBeenCalled();
+      });
+
+      it('processProductMedia uploads and inserts media when no primary media exists', async () => {
+        const jpegBuffer = createValidJpegBuffer(150);
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          arrayBuffer: () => Promise.resolve(jpegBuffer.buffer),
+        });
+
+        const uploadSpy = vi.fn().mockResolvedValue(undefined);
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]), // No existing media
+              }),
+            }),
+          }),
+          insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockReturnValue({
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'media-new-1' }]),
+              }),
+            }),
+          }),
+        };
+
+        const result = await processProductMedia(
+          {
+            museumId: 'mus-1',
+            productId: 'prod-1',
+            imageUrl: 'https://example.com/image.jpg',
+            superadminId: 'admin-1',
+            skipMedia: false,
+          },
+          {
+            dbClient: mockDb,
+            fetchFn: mockFetch as any,
+            uploadMediaFn: uploadSpy,
+          }
+        );
+
+        expect(result.status).toBe('created');
+        expect(result.mediaId).toBe('media-new-1');
+        expect(uploadSpy).toHaveBeenCalledTimes(1);
       });
     });
   });
