@@ -7,6 +7,7 @@ import {
   checkCatalogVisibilityWarning,
   checkForeignKeyReferences,
   checkStorageBucketPreflight,
+  cleanAllManagedSouvenirs,
   cleanExistingManagedSouvenirs,
   findOrCreateMuseum,
   getManagedSkus,
@@ -1012,7 +1013,22 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
             nodeEnv: 'development',
             databaseUrl: 'not-a-valid-url',
           })
-        ).toThrow(/Invalid DATABASE_URL/);
+        ).toThrow('Refusing to clean database: Invalid DATABASE_URL format.');
+
+        // Verify that raw credentials in malformed URLs are omitted from error message
+        try {
+          assertSafeCleanEnvironment({
+            nodeEnv: 'development',
+            databaseUrl: 'postgresql://sensitive_user:secret_password@:5432',
+          });
+          expect.fail('Should have thrown an error');
+        } catch (err: any) {
+          expect(err.message).toBe(
+            'Refusing to clean database: Invalid DATABASE_URL format.'
+          );
+          expect(err.message).not.toContain('sensitive_user');
+          expect(err.message).not.toContain('secret_password');
+        }
       });
 
       it('throws if DATABASE_URL points to a remote/cloud host', () => {
@@ -1365,28 +1381,178 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
 
         warnSpy.mockRestore();
       });
-    });
 
-    describe('Orchestration with --clean', () => {
-      it('aborts run early if upfront FK check detects locked products', async () => {
+      it('scopes batch cleanup strictly to specified museums and their respective SKUs in a single transaction', async () => {
+        const targets = [
+          { museumId: 'museum-1', managedSkus: ['NMNH-MIN-001', 'NMNH-MIN-002'] },
+          { museumId: 'museum-2', managedSkus: ['NASM-MOD-001'] },
+        ];
+
+        const existingProds = [
+          { id: 'prod-1', sku: 'NMNH-MIN-001', museumId: 'museum-1' },
+          { id: 'prod-2', sku: 'NASM-MOD-001', museumId: 'museum-2' },
+        ];
+
+        const mediaRows = [
+          { id: 'media-1', storagePath: 'museum-1/souvenir/prod-1/img1.jpg' },
+          { id: 'media-2', storagePath: 'museum-2/souvenir/prod-2/img2.jpg' },
+        ];
+
+        const deleteSpy = vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        });
+
+        const mockTx = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue(mediaRows),
+            }),
+          }),
+          delete: deleteSpy,
+        };
+
+        const transactionSpy = vi
+          .fn()
+          .mockImplementation(async (cb) => cb(mockTx));
+
         const mockDb: any = {
           select: vi.fn()
             .mockReturnValueOnce({
               from: vi.fn().mockReturnValue({
-                where: vi.fn().mockResolvedValue([{ id: 'locked-prod', sku: 'NMNH-MIN-001' }]),
+                where: vi.fn().mockResolvedValue(existingProds),
               }),
             })
             .mockReturnValueOnce({
               from: vi.fn().mockReturnValue({
-                where: vi.fn().mockResolvedValue([{ productId: 'locked-prod' }]), // in cart
+                where: vi.fn().mockResolvedValue([]), // cart_items empty
               }),
             })
             .mockReturnValueOnce({
               from: vi.fn().mockReturnValue({
-                where: vi.fn().mockResolvedValue([]),
+                where: vi.fn().mockResolvedValue([]), // shop_order_items empty
               }),
             }),
+          transaction: transactionSpy,
         };
+
+        const mockDeleteMedia = vi.fn().mockResolvedValue(undefined);
+
+        const result = await cleanAllManagedSouvenirs(
+          targets,
+          mockDb,
+          mockDeleteMedia
+        );
+
+        expect(result.deletedProductsCount).toBe(2);
+        expect(result.deletedMediaCount).toBe(2);
+        // Single atomic transaction across all museums
+        expect(transactionSpy).toHaveBeenCalledTimes(1);
+        expect(deleteSpy).toHaveBeenCalledTimes(2); // mediaAssets and souvenirProducts
+        expect(mockDeleteMedia).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('Orchestration with --clean', () => {
+      it('aborts run early if FK check detects locked products in any target museum', async () => {
+        const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+          id: `00000000-0000-4000-8000-00000000000${idx}`,
+          name: m.museumName,
+          slug: m.museumSlug,
+          status: 'published' as const,
+        }));
+
+        let museumIdx = 0;
+        const transactionSpy = vi.fn();
+
+        const mockDb: any = {
+          select: vi.fn().mockImplementation(() => ({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation(() => {
+                const wherePromise = Promise.resolve([]) as any;
+                wherePromise.limit = vi.fn().mockImplementation(() => {
+                  const item = fakeMuseums[museumIdx++];
+                  return Promise.resolve(item ? [item] : []);
+                });
+                return wherePromise;
+              }),
+            }),
+          })),
+          insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockReturnValue({
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+          transaction: transactionSpy,
+        };
+
+        // When cleanAllManagedSouvenirs runs:
+        // 1. First select queries existing products for the 6 museums -> returns 1 locked product
+        // 2. Second select queries cart_items -> returns reference
+        // 3. Third select queries shop_order_items -> empty
+        mockDb.select = vi.fn()
+          // 6 museum lookups
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([fakeMuseums[0]]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([fakeMuseums[1]]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([fakeMuseums[2]]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([fakeMuseums[3]]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([fakeMuseums[4]]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([fakeMuseums[5]]),
+              }),
+            }),
+          })
+          // Query products across target museums in cleanAllManagedSouvenirs
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                { id: 'locked-prod', sku: 'NMNH-MIN-001', museumId: fakeMuseums[0].id },
+              ]),
+            }),
+          })
+          // Cart items check
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ productId: 'locked-prod' }]),
+            }),
+          })
+          // Order items check
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+          });
 
         await expect(
           run(
@@ -1403,6 +1569,9 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
             }
           )
         ).rejects.toThrow(/Cannot clean souvenirs: 1 cart item\(s\)/);
+
+        // Transaction never executed because pre-check failed
+        expect(transactionSpy).not.toHaveBeenCalled();
       });
 
       it('successfully cleans managed souvenirs across museums in clean run', async () => {

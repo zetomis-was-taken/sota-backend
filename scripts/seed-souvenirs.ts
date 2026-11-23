@@ -852,7 +852,7 @@ export function assertSafeCleanEnvironment(
     hostname = parsed.hostname.toLowerCase();
   } catch {
     throw new Error(
-      `Refusing to clean database: Invalid DATABASE_URL "${rawUrl}".`
+      'Refusing to clean database: Invalid DATABASE_URL format.'
     );
   }
 
@@ -932,47 +932,65 @@ export interface CleanExistingSouvenirsResult {
   deletedMediaCount: number;
 }
 
+export interface CleanTargetMuseum {
+  museumId: string;
+  museumName?: string;
+  managedSkus: string[];
+}
+
+export type CleanManagedSouvenirsResult = CleanExistingSouvenirsResult;
+
 /**
- * Safely removes existing managed souvenirs for a specific museum.
- * Scoped strictly to managed SKUs. Pre-checks foreign keys (cart_items and shop_order_items).
- * Executes DB deletion within a transaction, then cleans associated Storage objects best-effort.
+ * Safely removes existing managed souvenirs across multiple museums in a single atomic transaction.
+ * Scoped strictly to the target museums and their corresponding managed SKUs.
+ * Pre-checks foreign keys (cart_items and shop_order_items) across all target products before touching DB.
+ * Deletes DB rows in one transaction (media_assets then souvenir_products),
+ * then cleans associated Supabase Storage objects best-effort after commit.
  */
-export async function cleanExistingManagedSouvenirs(
-  museumId: string,
-  managedSkus: string[],
+export async function cleanAllManagedSouvenirs(
+  targets: CleanTargetMuseum[],
   dbClient: any = db,
   deleteMediaFn: (bucket: string, path: string) => Promise<void> = deleteMedia
 ): Promise<CleanExistingSouvenirsResult> {
-  if (managedSkus.length === 0) {
+  const validTargets = targets.filter((t) => t.managedSkus.length > 0);
+  if (validTargets.length === 0) {
     return { deletedProductsCount: 0, deletedMediaCount: 0 };
   }
 
-  // 1. Find existing managed products for this museum
+  // 1. Construct scoped query condition matching each museum with its respective SKUs
+  const targetConditions = validTargets.map((t) =>
+    and(
+      eq(souvenirProducts.museumId, t.museumId),
+      inArray(souvenirProducts.sku, t.managedSkus)
+    )
+  );
+
+  const whereClause =
+    targetConditions.length === 1
+      ? targetConditions[0]
+      : or(...targetConditions);
+
   const existingProducts = await dbClient
     .select({
       id: souvenirProducts.id,
       sku: souvenirProducts.sku,
+      museumId: souvenirProducts.museumId,
     })
     .from(souvenirProducts)
-    .where(
-      and(
-        eq(souvenirProducts.museumId, museumId),
-        inArray(souvenirProducts.sku, managedSkus)
-      )
-    );
+    .where(whereClause);
 
   if (existingProducts.length === 0) {
     return { deletedProductsCount: 0, deletedMediaCount: 0 };
   }
 
   const productIds = existingProducts.map(
-    (p: { id: string; sku: string | null }) => p.id
+    (p: { id: string; sku: string | null; museumId: string }) => p.id
   );
 
-  // 2. Pre-check foreign key references before touching database
+  // 2. Pre-check foreign key references across all target products before touching database
   await checkForeignKeyReferences(productIds, dbClient);
 
-  // 3. Perform database deletion within transaction
+  // 3. Perform database deletion within a single transaction across all target museums
   let storagePathsToDelete: string[] = [];
   let deletedMediaCount = 0;
   let deletedProductsCount = 0;
@@ -996,7 +1014,7 @@ export async function cleanExistingManagedSouvenirs(
       .map((m: { storagePath: string | null }) => m.storagePath)
       .filter((p: string | null): p is string => typeof p === 'string' && p.length > 0);
 
-    // 3b. Delete media assets
+    // 3b. Delete all associated media assets
     if (mediaRows.length > 0) {
       await tx
         .delete(mediaAssets)
@@ -1009,7 +1027,7 @@ export async function cleanExistingManagedSouvenirs(
       deletedMediaCount = mediaRows.length;
     }
 
-    // 3c. Delete souvenir products
+    // 3c. Delete all souvenir products
     await tx
       .delete(souvenirProducts)
       .where(inArray(souvenirProducts.id, productIds));
@@ -1017,7 +1035,7 @@ export async function cleanExistingManagedSouvenirs(
     deletedProductsCount = existingProducts.length;
   });
 
-  // 4. Best-effort Supabase Storage object cleanup after successful DB commit
+  // 4. Best-effort Supabase Storage object cleanup after successful DB transaction commit
   const bucketName = env.souvenirMediaBucket;
   for (const path of storagePathsToDelete) {
     try {
@@ -1034,6 +1052,23 @@ export async function cleanExistingManagedSouvenirs(
     deletedProductsCount,
     deletedMediaCount,
   };
+}
+
+/**
+ * Safely removes existing managed souvenirs for a single museum.
+ * Scoped strictly to managed SKUs. Delegates to cleanAllManagedSouvenirs.
+ */
+export async function cleanExistingManagedSouvenirs(
+  museumId: string,
+  managedSkus: string[],
+  dbClient: any = db,
+  deleteMediaFn: (bucket: string, path: string) => Promise<void> = deleteMedia
+): Promise<CleanExistingSouvenirsResult> {
+  return cleanAllManagedSouvenirs(
+    [{ museumId, managedSkus }],
+    dbClient,
+    deleteMediaFn
+  );
 }
 
 export interface SeedSouvenirsCliOptions {
@@ -1213,7 +1248,7 @@ export async function run(
     `[seed:souvenirs] Starting orchestration with status="${config.status}", skipMedia=${config.skipMedia}, clean=${config.clean}...`
   );
 
-  // If clean requested, enforce safety environment guard and pre-check all managed SKUs upfront
+  // If clean requested, enforce safety environment guard
   if (config.clean) {
     assertSafeCleanEnvironment({
       nodeEnv: deps.nodeEnv,
@@ -1222,19 +1257,6 @@ export async function run(
     console.log(
       '[seed:souvenirs] Safe clean environment verified (local/test host and explicit dev/test NODE_ENV).'
     );
-
-    const allManagedSkus = getManagedSkus();
-    const allExistingManaged = await dbClient
-      .select({ id: souvenirProducts.id, sku: souvenirProducts.sku })
-      .from(souvenirProducts)
-      .where(inArray(souvenirProducts.sku, allManagedSkus));
-
-    if (allExistingManaged.length > 0) {
-      const allProductIds = allExistingManaged.map(
-        (p: { id: string }) => p.id
-      );
-      await checkForeignKeyReferences(allProductIds, dbClient);
-    }
   }
 
   // 1. Storage Preflight
@@ -1256,8 +1278,6 @@ export async function run(
   // 2. Discover/Create Museums & Check Visibility
   const processedMuseums: MuseumRecordInfo[] = [];
   const warnings: string[] = [];
-  let totalDeletedProducts = 0;
-  let totalDeletedMedia = 0;
 
   for (const def of SOUVENIR_FIXTURES) {
     const museum = await findOrCreateMuseum(
@@ -1270,23 +1290,6 @@ export async function run(
     );
     processedMuseums.push(museum);
 
-    if (config.clean) {
-      const museumSkus = def.items.map((i) => i.sku);
-      const cleanResult = await cleanExistingManagedSouvenirs(
-        museum.id,
-        museumSkus,
-        dbClient,
-        deps.deleteMediaFn ?? deleteMedia
-      );
-      totalDeletedProducts += cleanResult.deletedProductsCount;
-      totalDeletedMedia += cleanResult.deletedMediaCount;
-      if (cleanResult.deletedProductsCount > 0) {
-        console.log(
-          `[seed:souvenirs] Cleaned ${cleanResult.deletedProductsCount} existing managed souvenirs and ${cleanResult.deletedMediaCount} media assets for museum "${museum.name}".`
-        );
-      }
-    }
-
     const warning = checkCatalogVisibilityWarning(museum, config.status);
     if (warning) {
       warnings.push(warning);
@@ -1297,9 +1300,33 @@ export async function run(
   console.log(
     `[seed:souvenirs] Verified ${processedMuseums.length} target Smithsonian museums.`
   );
+
+  // 3. If clean is enabled, execute scoped cleanup across all target museums in a single atomic transaction
+  let cleanSummary:
+    | { deletedProductsCount: number; deletedMediaCount: number }
+    | undefined;
   if (config.clean) {
+    const cleanTargets: CleanTargetMuseum[] = SOUVENIR_FIXTURES.map(
+      (def, idx) => ({
+        museumId: processedMuseums[idx].id,
+        museumName: processedMuseums[idx].name,
+        managedSkus: def.items.map((i) => i.sku),
+      })
+    );
+
+    const cleanResult = await cleanAllManagedSouvenirs(
+      cleanTargets,
+      dbClient,
+      deps.deleteMediaFn ?? deleteMedia
+    );
+
+    cleanSummary = {
+      deletedProductsCount: cleanResult.deletedProductsCount,
+      deletedMediaCount: cleanResult.deletedMediaCount,
+    };
+
     console.log(
-      `[seed:souvenirs] Clean summary: ${totalDeletedProducts} products and ${totalDeletedMedia} media assets deleted across all target museums.`
+      `[seed:souvenirs] Clean summary: ${cleanResult.deletedProductsCount} products and ${cleanResult.deletedMediaCount} media assets deleted across all target museums in a single transaction.`
     );
   }
 
@@ -1307,12 +1334,7 @@ export async function run(
     museums: processedMuseums,
     warnings,
     storagePreflight,
-    cleanSummary: config.clean
-      ? {
-          deletedProductsCount: totalDeletedProducts,
-          deletedMediaCount: totalDeletedMedia,
-        }
-      : undefined,
+    cleanSummary,
   };
 }
 
