@@ -807,9 +807,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       ).rejects.toThrow(/was not found in database.*seed:superadmins/);
     });
 
-    it('warns if user exists in users table but lacks super_admin role', async () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
+    it('throws error if user exists in users table but lacks super_admin role', async () => {
       const mockDb: any = {
         select: vi.fn()
           .mockReturnValueOnce({
@@ -828,12 +826,35 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           }),
       };
 
-      await verifySuperadminExists('valid-user-id', mockDb);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("does not have the 'super_admin' role")
+      await expect(
+        verifySuperadminExists('valid-user-id', mockDb)
+      ).rejects.toThrow(
+        /does not have the 'super_admin' role in user_roles/
       );
+    });
 
-      warnSpy.mockRestore();
+    it('succeeds without error when user has super_admin role', async () => {
+      const mockDb: any = {
+        select: vi.fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: 'valid-user-id' }]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ role: 'super_admin' }]),
+              }),
+            }),
+          }),
+      };
+
+      await expect(
+        verifySuperadminExists('valid-user-id', mockDb)
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -2804,6 +2825,11 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           process.exitCode = prevExitCode;
           consoleErrorSpy.mockRestore();
         }
+      });
+
+      it('registers seed:souvenirs command in package.json', async () => {
+        const pkg = await import('../../package.json');
+        expect(pkg.scripts['seed:souvenirs']).toBe('tsx scripts/seed-souvenirs.ts');
       });
     });
   });

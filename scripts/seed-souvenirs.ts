@@ -1757,8 +1757,8 @@ export async function verifySuperadminExists(
     .limit(1);
 
   if (!role) {
-    console.warn(
-      `Notice: User "${superadminId}" is in users table but does not have the 'super_admin' role in user_roles.`
+    throw new Error(
+      `User "${superadminId}" does not have the 'super_admin' role in user_roles. Please assign the role or run "npm run seed:superadmins".`
     );
   }
 }
@@ -2004,21 +2004,21 @@ export async function main(
   args: string[] = process.argv.slice(2),
   deps: MainDependencies = {}
 ): Promise<SeedRunResult> {
-  const rawOptions = parseCliArgs(args);
-  const config = validateSeedConfig({
-    superadminId: rawOptions.superadminId || process.env.SUPERADMIN_ID,
-    status: rawOptions.status,
-    clean: rawOptions.clean,
-    skipMedia: rawOptions.skipMedia,
-    nodeEnv: process.env.NODE_ENV,
-    databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
-  });
-
   const verifyFn = deps.verifySuperadminFn ?? verifySuperadminExists;
   const runFn = deps.runFn ?? run;
   const closeFn = deps.closeDbFn ?? closeDb;
 
   try {
+    const rawOptions = parseCliArgs(args);
+    const config = validateSeedConfig({
+      superadminId: rawOptions.superadminId || process.env.SUPERADMIN_ID,
+      status: rawOptions.status,
+      clean: rawOptions.clean,
+      skipMedia: rawOptions.skipMedia,
+      nodeEnv: process.env.NODE_ENV,
+      databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
+    });
+
     await verifyFn(config.superadminId);
     const result = await runFn(config, {
       nodeEnv: process.env.NODE_ENV,
