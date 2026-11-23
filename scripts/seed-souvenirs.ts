@@ -1458,6 +1458,7 @@ export async function getExistingPrimaryMedia(
 export interface ProcessProductMediaParams {
   museumId: string;
   productId: string;
+  sku?: string;
   imageUrl: string;
   superadminId: string;
   skipMedia?: boolean;
@@ -1492,22 +1493,100 @@ export async function processProductMedia(
     };
   }
 
-  const res = await uploadAndInsertSouvenirMedia(
-    {
-      museumId: params.museumId,
-      productId: params.productId,
-      imageUrl: params.imageUrl,
-      superadminId: params.superadminId,
-      bucketName: params.bucketName,
-    },
-    deps
-  );
+  try {
+    const res = await uploadAndInsertSouvenirMedia(
+      {
+        museumId: params.museumId,
+        productId: params.productId,
+        imageUrl: params.imageUrl,
+        superadminId: params.superadminId,
+        bucketName: params.bucketName,
+      },
+      deps
+    );
 
-  return {
-    status: res.created ? 'created' : 'skipped',
-    storagePath: res.storagePath,
-    mediaId: res.mediaId ?? undefined,
-  };
+    return {
+      status: res.created ? 'created' : 'skipped',
+      storagePath: res.storagePath,
+      mediaId: res.mediaId ?? undefined,
+    };
+  } catch (err: any) {
+    console.error(
+      `[seed:souvenirs] Media error for product "${params.productId}" (SKU: ${params.sku || 'unknown'}): ${
+        err?.message || err
+      }`
+    );
+    throw err;
+  }
+}
+
+export interface UpsertProductResult {
+  id: string;
+  action: 'created' | 'existing';
+}
+
+/**
+ * Inserts a souvenir product with superadmin createdBy, preserving existing product on conflict.
+ */
+export async function upsertSouvenirProduct(
+  museumId: string,
+  item: SouvenirFixtureItem,
+  status: 'draft' | 'published',
+  superadminId: string,
+  dbClient: any = db
+): Promise<UpsertProductResult> {
+  const [inserted] = await dbClient
+    .insert(souvenirProducts)
+    .values({
+      museumId,
+      name: item.name,
+      description: item.description,
+      sku: item.sku,
+      price: item.price,
+      currency: 'VND',
+      stockQuantity: item.stockQuantity,
+      status,
+      createdBy: superadminId,
+    })
+    .onConflictDoNothing()
+    .returning({ id: souvenirProducts.id });
+
+  if (inserted) {
+    return { id: inserted.id, action: 'created' };
+  }
+
+  // Conflict on unique (museum_id, sku) constraint -> look up existing product
+  const [existing] = await dbClient
+    .select({ id: souvenirProducts.id })
+    .from(souvenirProducts)
+    .where(
+      and(
+        eq(souvenirProducts.museumId, museumId),
+        eq(souvenirProducts.sku, item.sku)
+      )
+    )
+    .limit(1);
+
+  if (!existing) {
+    throw new Error(
+      `Unexpected conflict when inserting product with SKU "${item.sku}" in museum "${museumId}": no existing product found.`
+    );
+  }
+
+  return { id: existing.id, action: 'existing' };
+}
+
+export interface MediaStats {
+  uploadedCount: number;
+  skippedCount: number;
+  existingCount: number;
+  errorCount: number;
+}
+
+export interface ProductsSummary {
+  createdCount: number;
+  existingCount: number;
+  totalItems: number;
 }
 
 export interface SeedSouvenirsCliOptions {
@@ -1547,6 +1626,9 @@ export interface SeedRunResult {
     deletedProductsCount: number;
     deletedMediaCount: number;
   };
+  mediaStats: MediaStats;
+  mediaErrors: number;
+  productsSummary: ProductsSummary;
 }
 
 /**
@@ -1779,16 +1861,102 @@ export async function run(
     );
   }
 
+  // 4. Seed products and process media across all target museums
+  const mediaStats: MediaStats = {
+    uploadedCount: 0,
+    skippedCount: 0,
+    existingCount: 0,
+    errorCount: 0,
+  };
+
+  const productsSummary: ProductsSummary = {
+    createdCount: 0,
+    existingCount: 0,
+    totalItems: 0,
+  };
+
+  for (let mIdx = 0; mIdx < SOUVENIR_FIXTURES.length; mIdx++) {
+    const def = SOUVENIR_FIXTURES[mIdx];
+    const museum = processedMuseums[mIdx];
+
+    for (const item of def.items) {
+      productsSummary.totalItems++;
+
+      const productResult = await upsertSouvenirProduct(
+        museum.id,
+        item,
+        config.status,
+        config.superadminId,
+        dbClient
+      );
+
+      if (productResult.action === 'created') {
+        productsSummary.createdCount++;
+      } else {
+        productsSummary.existingCount++;
+      }
+
+      try {
+        const mediaResult = await processProductMedia(
+          {
+            museumId: museum.id,
+            productId: productResult.id,
+            sku: item.sku,
+            imageUrl: item.imageUrl,
+            superadminId: config.superadminId,
+            skipMedia: config.skipMedia,
+            bucketName: env.souvenirMediaBucket,
+          },
+          {
+            fetchFn: deps.fetchFn,
+            uploadMediaFn: deps.uploadMediaFn,
+            deleteMediaFn: deps.deleteMediaFn,
+            dbClient,
+          }
+        );
+
+        if (mediaResult.status === 'created') {
+          mediaStats.uploadedCount++;
+        } else if (mediaResult.status === 'existing') {
+          mediaStats.existingCount++;
+        } else if (mediaResult.status === 'skipped') {
+          mediaStats.skippedCount++;
+        }
+      } catch {
+        mediaStats.errorCount++;
+      }
+    }
+  }
+
+  console.log(
+    `[seed:souvenirs] Products summary: ${productsSummary.createdCount} created, ${productsSummary.existingCount} existing out of ${productsSummary.totalItems} items across ${processedMuseums.length} museums.`
+  );
+  console.log(
+    `[seed:souvenirs] Media summary: ${mediaStats.uploadedCount} uploaded, ${mediaStats.existingCount} existing, ${mediaStats.skippedCount} skipped, ${mediaStats.errorCount} error(s).`
+  );
+
   return {
     museums: processedMuseums,
     warnings,
     storagePreflight,
     cleanSummary,
+    mediaStats,
+    mediaErrors: mediaStats.errorCount,
+    productsSummary,
   };
 }
 
-export async function main() {
-  const rawOptions = parseCliArgs();
+export interface MainDependencies {
+  runFn?: typeof run;
+  verifySuperadminFn?: typeof verifySuperadminExists;
+  closeDbFn?: typeof closeDb;
+}
+
+export async function main(
+  args: string[] = process.argv.slice(2),
+  deps: MainDependencies = {}
+): Promise<SeedRunResult> {
+  const rawOptions = parseCliArgs(args);
   const config = validateSeedConfig({
     superadminId: rawOptions.superadminId,
     status: rawOptions.status,
@@ -1798,14 +1966,27 @@ export async function main() {
     databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
   });
 
+  const verifyFn = deps.verifySuperadminFn ?? verifySuperadminExists;
+  const runFn = deps.runFn ?? run;
+  const closeFn = deps.closeDbFn ?? closeDb;
+
   try {
-    await verifySuperadminExists(config.superadminId);
-    await run(config, {
+    await verifyFn(config.superadminId);
+    const result = await runFn(config, {
       nodeEnv: process.env.NODE_ENV,
       databaseUrl: process.env.DATABASE_URL || env.databaseUrl,
     });
+
+    if (result.mediaErrors > 0) {
+      console.error(
+        `[seed:souvenirs] Seeding finished with ${result.mediaErrors} media error(s). Setting exit code 1.`
+      );
+      process.exitCode = 1;
+    }
+
+    return result;
   } finally {
-    await closeDb();
+    await closeFn();
   }
 }
 

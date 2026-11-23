@@ -14,6 +14,7 @@ import {
   findOrCreateMuseum,
   getExistingPrimaryMedia,
   getManagedSkus,
+  main,
   MANAGED_SKUS,
   MAX_MEDIA_BYTES,
   MIN_MEDIA_BYTES,
@@ -24,6 +25,7 @@ import {
   runStoragePreflight,
   SOUVENIR_FIXTURES,
   uploadAndInsertSouvenirMedia,
+  upsertSouvenirProduct,
   validateSeedConfig,
   validateStorageConfig,
   verifySuperadminExists,
@@ -469,6 +471,9 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
             onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'mock-prod-id' }]),
+            }),
           }),
         }),
       };
@@ -814,19 +819,28 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
 
       let callCount = 0;
       const mockDb: any = {
-        select: vi.fn().mockReturnValue({
+        select: vi.fn().mockImplementation(() => ({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockImplementation(() => {
+            where: vi.fn().mockImplementation(() => {
+              const wherePromise = Promise.resolve([]) as any;
+              wherePromise.limit = vi.fn().mockImplementation(() => {
                 const item = fakeMuseums[callCount++];
-                return Promise.resolve(item ? [item] : []);
-              }),
+                return Promise.resolve(
+                  item
+                    ? [item]
+                    : [{ id: 'mock-existing-media', storagePath: 'mock/path.jpg' }]
+                );
+              });
+              return wherePromise;
             }),
           }),
-        }),
+        })),
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
             onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'mock-prod-id' }]),
+            }),
           }),
         }),
       };
@@ -884,6 +898,9 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
             onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'mock-prod-id' }]),
+            }),
           }),
         }),
       };
@@ -923,14 +940,27 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
 
       let insertedMuseumStatus: string | null = null;
 
+      let museumLookupCount = 0;
       const mockDb: any = {
-        select: vi.fn().mockReturnValue({
+        select: vi.fn().mockImplementation(() => ({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]), // Museum does not exist -> creates new
+            where: vi.fn().mockImplementation(() => {
+              const wherePromise = Promise.resolve([]) as any;
+              wherePromise.limit = vi.fn().mockImplementation(() => {
+                museumLookupCount++;
+                // First 6 calls are museum lookups -> return empty to trigger creation
+                if (museumLookupCount <= 6) {
+                  return Promise.resolve([]);
+                }
+                // Subsequent calls are media checks -> return existing media
+                return Promise.resolve([
+                  { id: 'mock-existing-media', storagePath: 'mock/path.jpg' },
+                ]);
+              });
+              return wherePromise;
             }),
           }),
-        }),
+        })),
         insert: vi.fn().mockImplementation(() => ({
           values: vi.fn().mockImplementation((val) => {
             if (val.slug) {
@@ -939,6 +969,9 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
             return {
               returning: vi.fn().mockResolvedValue([createdMuseum]),
               onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'mock-prod-id' }]),
+              }),
             };
           }),
         })),
@@ -1636,6 +1669,9 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           insert: vi.fn().mockReturnValue({
             values: vi.fn().mockReturnValue({
               onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'mock-prod-id' }]),
+              }),
             }),
           }),
         };
@@ -1703,6 +1739,32 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
             fetchFn: mockFetch as any,
           })
         ).rejects.toThrow(/Failed to fetch media from.*connection timeout/);
+      });
+
+      it('passes AbortSignal to fetch and rejects when signal is aborted', async () => {
+        const controller = new AbortController();
+        controller.abort();
+
+        const mockFetch = vi.fn().mockImplementation((_url, init) => {
+          if (init?.signal?.aborted) {
+            const err = new Error('This operation was aborted');
+            err.name = 'AbortError';
+            return Promise.reject(err);
+          }
+          return Promise.resolve({ ok: true, status: 200 } as any);
+        });
+
+        await expect(
+          fetchAndValidateMedia('https://example.com/timeout.jpg', {
+            fetchFn: mockFetch as any,
+            signal: controller.signal,
+          })
+        ).rejects.toThrow(/Failed to fetch media from.*aborted/);
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          'https://example.com/timeout.jpg',
+          expect.objectContaining({ signal: controller.signal })
+        );
       });
 
       it('throws error when HTTP response status is not ok', async () => {
@@ -1915,12 +1977,13 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         });
 
         const uploadSpy = vi.fn().mockResolvedValue(undefined);
-        const insertSpy = vi.fn().mockReturnValue({
-          values: vi.fn().mockReturnValue({
-            onConflictDoNothing: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([{ id: 'media-row-1' }]),
-            }),
+        const valuesSpy = vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'media-row-1' }]),
           }),
+        });
+        const insertSpy = vi.fn().mockReturnValue({
+          values: valuesSpy,
         });
 
         const mockDb: any = { insert: insertSpy };
@@ -1944,6 +2007,19 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         expect(result.mediaId).toBe('media-row-1');
         expect(result.storagePath).toMatch(
           /^a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11\/souvenir\/b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22\/[a-f0-9]+\.jpg$/
+        );
+
+        expect(valuesSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            museumId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+            entityType: 'souvenir',
+            entityId: 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a22',
+            mediaType: 'image',
+            storageBucket: 'souvenir-media',
+            mimeType: 'image/jpeg',
+            isPrimary: true,
+            createdBy: 'c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a33',
+          })
         );
 
         expect(uploadSpy).toHaveBeenCalledWith(
@@ -2188,6 +2264,397 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
         expect(result.status).toBe('created');
         expect(result.mediaId).toBe('media-new-1');
         expect(uploadSpy).toHaveBeenCalledTimes(1);
+      });
+
+      it('logs media error with product ID and SKU and throws when media upload fails', async () => {
+        const consoleErrorSpy = vi
+          .spyOn(console, 'error')
+          .mockImplementation(() => {});
+
+        const mockFetch = vi
+          .fn()
+          .mockRejectedValue(new Error('Connection dropped'));
+
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]), // No existing media
+              }),
+            }),
+          }),
+        };
+
+        await expect(
+          processProductMedia(
+            {
+              museumId: 'mus-1',
+              productId: 'prod-err-123',
+              sku: 'NMNH-MIN-001',
+              imageUrl: 'https://example.com/image.jpg',
+              superadminId: 'admin-1',
+              skipMedia: false,
+            },
+            {
+              dbClient: mockDb,
+              fetchFn: mockFetch as any,
+            }
+          )
+        ).rejects.toThrow('Connection dropped');
+
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            '[seed:souvenirs] Media error for product "prod-err-123" (SKU: NMNH-MIN-001)'
+          )
+        );
+
+        consoleErrorSpy.mockRestore();
+      });
+    });
+
+    describe('Product Upsert & CreatedBy Guarantee (upsertSouvenirProduct)', () => {
+      const sampleItem = SOUVENIR_FIXTURES[0].items[0];
+
+      it('inserts new product with createdBy assigned to superadminId', async () => {
+        const valuesSpy = vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'new-prod-id' }]),
+          }),
+        });
+        const insertSpy = vi.fn().mockReturnValue({
+          values: valuesSpy,
+        });
+
+        const mockDb: any = { insert: insertSpy };
+
+        const result = await upsertSouvenirProduct(
+          'mus-uuid-1',
+          sampleItem,
+          'published',
+          'superadmin-uuid-1',
+          mockDb
+        );
+
+        expect(result).toEqual({ id: 'new-prod-id', action: 'created' });
+        expect(valuesSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            museumId: 'mus-uuid-1',
+            sku: sampleItem.sku,
+            createdBy: 'superadmin-uuid-1',
+            status: 'published',
+            currency: 'VND',
+          })
+        );
+      });
+
+      it('resolves existing product on conflict without modifying existing data', async () => {
+        const insertSpy = vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]), // Conflict -> no returning row
+            }),
+          }),
+        });
+
+        const selectSpy = vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'existing-prod-id' }]),
+            }),
+          }),
+        });
+
+        const mockDb: any = {
+          insert: insertSpy,
+          select: selectSpy,
+        };
+
+        const result = await upsertSouvenirProduct(
+          'mus-uuid-1',
+          sampleItem,
+          'published',
+          'superadmin-uuid-1',
+          mockDb
+        );
+
+        expect(result).toEqual({ id: 'existing-prod-id', action: 'existing' });
+      });
+
+      it('throws error when conflict occurs but existing product cannot be found', async () => {
+        const insertSpy = vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        });
+
+        const selectSpy = vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]), // Missing!
+            }),
+          }),
+        });
+
+        const mockDb: any = {
+          insert: insertSpy,
+          select: selectSpy,
+        };
+
+        await expect(
+          upsertSouvenirProduct(
+            'mus-uuid-1',
+            sampleItem,
+            'published',
+            'superadmin-uuid-1',
+            mockDb
+          )
+        ).rejects.toThrow(/Unexpected conflict when inserting product with SKU/);
+      });
+    });
+
+    describe('End-to-End Orchestration & Media Error Tracking (run)', () => {
+      it('seeds 38 products across 6 museums and counts media accurately', async () => {
+        const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+          id: `00000000-0000-4000-8000-00000000000${idx}`,
+          name: m.museumName,
+          slug: m.museumSlug,
+          status: 'published' as const,
+        }));
+
+        let callCount = 0;
+        const mockDb: any = {
+          select: vi.fn().mockImplementation(() => ({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation(() => {
+                const wherePromise = Promise.resolve([]) as any;
+                wherePromise.limit = vi.fn().mockImplementation(() => {
+                  const item = fakeMuseums[callCount++];
+                  return Promise.resolve(
+                    item
+                      ? [item]
+                      : [
+                          {
+                            id: 'mock-existing-media',
+                            storagePath: 'mock/path.jpg',
+                          },
+                        ]
+                  );
+                });
+                return wherePromise;
+              }),
+            }),
+          })),
+          insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockReturnValue({
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'mock-prod-id' }]),
+              }),
+            }),
+          }),
+        };
+
+        const mockStorageClient = {
+          storage: {
+            getBucket: vi.fn().mockResolvedValue({
+              data: {
+                id: 'souvenir-media',
+                name: 'souvenir-media',
+                public: true,
+              },
+              error: null,
+            }),
+          },
+        };
+
+        const result = await run(
+          {
+            superadminId: '11111111-2222-4333-8444-555555555555',
+            status: 'published',
+            clean: false,
+            skipMedia: false,
+          },
+          {
+            dbClient: mockDb,
+            storageClient: mockStorageClient,
+          }
+        );
+
+        expect(result.museums).toHaveLength(6);
+        expect(result.productsSummary.totalItems).toBe(38);
+        expect(result.productsSummary.createdCount).toBe(38);
+        expect(result.mediaStats.errorCount).toBe(0);
+        expect(result.mediaErrors).toBe(0);
+      });
+
+      it('logs media errors with product ID and increments mediaErrors when media processing fails', async () => {
+        const consoleErrorSpy = vi
+          .spyOn(console, 'error')
+          .mockImplementation(() => {});
+
+        const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
+          id: `00000000-0000-4000-8000-00000000000${idx}`,
+          name: m.museumName,
+          slug: m.museumSlug,
+          status: 'published' as const,
+        }));
+
+        let callCount = 0;
+        const mockDb: any = {
+          select: vi.fn().mockImplementation(() => ({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation(() => {
+                const wherePromise = Promise.resolve([]) as any;
+                wherePromise.limit = vi.fn().mockImplementation(() => {
+                  const item = fakeMuseums[callCount++];
+                  return Promise.resolve(item ? [item] : []); // No existing media -> triggers fetch
+                });
+                return wherePromise;
+              }),
+            }),
+          })),
+          insert: vi.fn().mockReturnValue({
+            values: vi.fn().mockReturnValue({
+              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
+              onConflictDoNothing: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'prod-fail-id' }]),
+              }),
+            }),
+          }),
+        };
+
+        const mockStorageClient = {
+          storage: {
+            getBucket: vi.fn().mockResolvedValue({
+              data: {
+                id: 'souvenir-media',
+                name: 'souvenir-media',
+                public: true,
+              },
+              error: null,
+            }),
+          },
+        };
+
+        const mockFetch = vi
+          .fn()
+          .mockRejectedValue(new Error('Wikimedia timeout'));
+
+        const result = await run(
+          {
+            superadminId: '11111111-2222-4333-8444-555555555555',
+            status: 'published',
+            clean: false,
+            skipMedia: false,
+          },
+          {
+            dbClient: mockDb,
+            storageClient: mockStorageClient,
+            fetchFn: mockFetch as any,
+          }
+        );
+
+        expect(result.productsSummary.totalItems).toBe(38);
+        expect(result.mediaStats.errorCount).toBe(38);
+        expect(result.mediaErrors).toBe(38);
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            '[seed:souvenirs] Media error for product "prod-fail-id"'
+          )
+        );
+
+        consoleErrorSpy.mockRestore();
+      });
+    });
+
+    describe('CLI Entrypoint & Process Exit Code (main)', () => {
+      it('sets process.exitCode = 1 when run completes with mediaErrors > 0', async () => {
+        const consoleErrorSpy = vi
+          .spyOn(console, 'error')
+          .mockImplementation(() => {});
+        const prevExitCode = process.exitCode;
+        process.exitCode = undefined;
+
+        try {
+          const mockRun = vi.fn().mockResolvedValue({
+            museums: [],
+            warnings: [],
+            storagePreflight: {
+              skipped: true,
+              bucketName: 'souvenir-media',
+              isPublic: true,
+            },
+            mediaStats: {
+              uploadedCount: 0,
+              skippedCount: 0,
+              existingCount: 0,
+              errorCount: 2,
+            },
+            mediaErrors: 2,
+            productsSummary: {
+              createdCount: 36,
+              existingCount: 0,
+              totalItems: 38,
+            },
+          });
+
+          await main(['--superadmin', '11111111-2222-4333-8444-555555555555'], {
+            runFn: mockRun,
+            verifySuperadminFn: vi.fn().mockResolvedValue(undefined),
+            closeDbFn: vi.fn().mockResolvedValue(undefined),
+          });
+
+          expect(process.exitCode).toBe(1);
+          expect(consoleErrorSpy).toHaveBeenCalledWith(
+            expect.stringContaining(
+              'Seeding finished with 2 media error(s). Setting exit code 1.'
+            )
+          );
+        } finally {
+          process.exitCode = prevExitCode;
+          consoleErrorSpy.mockRestore();
+        }
+      });
+
+      it('leaves process.exitCode unchanged when run completes with mediaErrors = 0', async () => {
+        const prevExitCode = process.exitCode;
+        process.exitCode = undefined;
+
+        try {
+          const mockRun = vi.fn().mockResolvedValue({
+            museums: [],
+            warnings: [],
+            storagePreflight: {
+              skipped: true,
+              bucketName: 'souvenir-media',
+              isPublic: true,
+            },
+            mediaStats: {
+              uploadedCount: 38,
+              skippedCount: 0,
+              existingCount: 0,
+              errorCount: 0,
+            },
+            mediaErrors: 0,
+            productsSummary: {
+              createdCount: 38,
+              existingCount: 0,
+              totalItems: 38,
+            },
+          });
+
+          await main(['--superadmin', '11111111-2222-4333-8444-555555555555'], {
+            runFn: mockRun,
+            verifySuperadminFn: vi.fn().mockResolvedValue(undefined),
+            closeDbFn: vi.fn().mockResolvedValue(undefined),
+          });
+
+          expect(process.exitCode).toBeUndefined();
+        } finally {
+          process.exitCode = prevExitCode;
+        }
       });
     });
   });
