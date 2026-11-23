@@ -13,6 +13,7 @@ import {
   getManagedSkus,
   MANAGED_SKUS,
   parseCliArgs,
+  precheckManagedSouvenirsForeignKeys,
   run,
   runStoragePreflight,
   SOUVENIR_FIXTURES,
@@ -419,7 +420,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
 
       await expect(
         checkStorageBucketPreflight('souvenir-media', mockStorageClient)
-      ).rejects.toThrow(/không tồn tại trên Supabase Storage.*TODO\.md/);
+      ).rejects.toThrow(/does not exist on Supabase Storage.*TODO\.md/);
     });
 
     it('fails fast when bucket exists but is private (public: false)', async () => {
@@ -435,7 +436,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       await expect(
         checkStorageBucketPreflight('souvenir-media', mockStorageClient)
       ).rejects.toThrow(
-        /tồn tại nhưng không ở chế độ public \(public: false\)/
+        /exists but is not public \(public: false\)/
       );
     });
   });
@@ -652,7 +653,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       );
 
       expect(warning).not.toBeNull();
-      expect(warning).toContain('bị ẩn khỏi Public Catalog API (404)');
+      expect(warning).toContain('hidden from the Public Catalog API (404)');
       expect(warning).toContain('draft');
     });
 
@@ -663,7 +664,7 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       );
 
       expect(warning).not.toBeNull();
-      expect(warning).toContain('bị ẩn khỏi Public Catalog API (404)');
+      expect(warning).toContain('hidden from the Public Catalog API (404)');
       expect(warning).toContain('archived');
     });
 
@@ -1203,6 +1204,92 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
       });
     });
 
+    describe('Scoped Read-Only Foreign Key Pre-check (precheckManagedSouvenirsForeignKeys)', () => {
+      it('returns clean result when no target museums exist in database', async () => {
+        const mockDb: any = {
+          select: vi.fn().mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]), // no existing museums
+            }),
+          }),
+        };
+
+        const result = await precheckManagedSouvenirsForeignKeys(
+          SOUVENIR_FIXTURES,
+          mockDb
+        );
+
+        expect(result.hasReferences).toBe(false);
+        expect(result.cartCount).toBe(0);
+        expect(result.orderCount).toBe(0);
+      });
+
+      it('returns clean result when target museums exist but have no existing products', async () => {
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  {
+                    id: 'mus-1',
+                    slug: SOUVENIR_FIXTURES[0].museumSlug,
+                    name: SOUVENIR_FIXTURES[0].museumName,
+                  },
+                ]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]), // no existing products
+              }),
+            }),
+        };
+
+        const result = await precheckManagedSouvenirsForeignKeys(
+          SOUVENIR_FIXTURES,
+          mockDb
+        );
+
+        expect(result.hasReferences).toBe(false);
+      });
+
+      it('aborts and throws error when an existing product in a target museum is in a cart', async () => {
+        const mockDb: any = {
+          select: vi.fn()
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  {
+                    id: 'mus-1',
+                    slug: SOUVENIR_FIXTURES[0].museumSlug,
+                    name: SOUVENIR_FIXTURES[0].museumName,
+                  },
+                ]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ id: 'prod-locked' }]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ productId: 'prod-locked' }]),
+              }),
+            })
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+        };
+
+        await expect(
+          precheckManagedSouvenirsForeignKeys(SOUVENIR_FIXTURES, mockDb)
+        ).rejects.toThrow(/Cannot clean souvenirs: 1 cart item\(s\)/);
+      });
+    });
+
     describe('Scoped Managed Souvenirs Cleanup (cleanExistingManagedSouvenirs)', () => {
       it('returns zero deleted when managedSkus is empty', async () => {
         const mockDb: any = {};
@@ -1453,106 +1540,48 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
     });
 
     describe('Orchestration with --clean', () => {
-      it('aborts run early if FK check detects locked products in any target museum', async () => {
-        const fakeMuseums = SOUVENIR_FIXTURES.map((m, idx) => ({
-          id: `00000000-0000-4000-8000-00000000000${idx}`,
-          name: m.museumName,
-          slug: m.museumSlug,
+      it('aborts run early before any museum creation or membership writes when products are locked', async () => {
+        const fakeMuseum = {
+          id: '00000000-0000-4000-8000-000000000000',
+          name: SOUVENIR_FIXTURES[0].museumName,
+          slug: SOUVENIR_FIXTURES[0].museumSlug,
           status: 'published' as const,
-        }));
+        };
 
-        let museumIdx = 0;
+        const insertSpy = vi.fn();
         const transactionSpy = vi.fn();
 
         const mockDb: any = {
-          select: vi.fn().mockImplementation(() => ({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockImplementation(() => {
-                const wherePromise = Promise.resolve([]) as any;
-                wherePromise.limit = vi.fn().mockImplementation(() => {
-                  const item = fakeMuseums[museumIdx++];
-                  return Promise.resolve(item ? [item] : []);
-                });
-                return wherePromise;
+          select: vi.fn()
+            // 1. precheck: query existing target museums (read-only)
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([fakeMuseum]),
+              }),
+            })
+            // 2. precheck: query existing products in those museums (read-only)
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  { id: 'locked-prod', sku: 'NMNH-MIN-001', museumId: fakeMuseum.id },
+                ]),
+              }),
+            })
+            // 3. checkForeignKeyReferences: cart items check (read-only)
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ productId: 'locked-prod' }]),
+              }),
+            })
+            // 4. checkForeignKeyReferences: order items check (read-only)
+            .mockReturnValueOnce({
+              from: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
               }),
             }),
-          })),
-          insert: vi.fn().mockReturnValue({
-            values: vi.fn().mockReturnValue({
-              onConflictDoUpdate: vi.fn().mockResolvedValue([]),
-            }),
-          }),
+          insert: insertSpy,
           transaction: transactionSpy,
         };
-
-        // When cleanAllManagedSouvenirs runs:
-        // 1. First select queries existing products for the 6 museums -> returns 1 locked product
-        // 2. Second select queries cart_items -> returns reference
-        // 3. Third select queries shop_order_items -> empty
-        mockDb.select = vi.fn()
-          // 6 museum lookups
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([fakeMuseums[0]]),
-              }),
-            }),
-          })
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([fakeMuseums[1]]),
-              }),
-            }),
-          })
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([fakeMuseums[2]]),
-              }),
-            }),
-          })
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([fakeMuseums[3]]),
-              }),
-            }),
-          })
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([fakeMuseums[4]]),
-              }),
-            }),
-          })
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([fakeMuseums[5]]),
-              }),
-            }),
-          })
-          // Query products across target museums in cleanAllManagedSouvenirs
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([
-                { id: 'locked-prod', sku: 'NMNH-MIN-001', museumId: fakeMuseums[0].id },
-              ]),
-            }),
-          })
-          // Cart items check
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([{ productId: 'locked-prod' }]),
-            }),
-          })
-          // Order items check
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([]),
-            }),
-          });
 
         await expect(
           run(
@@ -1570,7 +1599,8 @@ describe('Seed Souvenirs Script - Phase 2 Storage Preflight, Museum Find-or-Crea
           )
         ).rejects.toThrow(/Cannot clean souvenirs: 1 cart item\(s\)/);
 
-        // Transaction never executed because pre-check failed
+        // Crucial guarantee: verify NO museum or admin membership writes occurred before FK check aborted
+        expect(insertSpy).not.toHaveBeenCalled();
         expect(transactionSpy).not.toHaveBeenCalled();
       });
 

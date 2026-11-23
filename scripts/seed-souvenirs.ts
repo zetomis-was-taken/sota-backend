@@ -654,15 +654,15 @@ export async function checkStorageBucketPreflight(
 
   if (error || !bucket) {
     throw new Error(
-      `Bucket "${bucketName}" không tồn tại trên Supabase Storage (${
+      `Bucket "${bucketName}" does not exist on Supabase Storage (${
         error?.message || 'Not found'
-      }). Vui lòng tạo public bucket "${bucketName}" theo hướng dẫn tại TODO.md (dòng 97) trước khi chạy seed.`
+      }). Please create public bucket "${bucketName}" following TODO.md (line 97) before running seed.`
     );
   }
 
   if (!bucket.public) {
     throw new Error(
-      `Bucket "${bucketName}" tồn tại nhưng không ở chế độ public (public: false). Vui lòng cập nhật cấu hình bucket "${bucketName}" thành Public (public: true) để catalog có thể phục vụ hình ảnh công khai.`
+      `Bucket "${bucketName}" exists but is not public (public: false). Please update bucket "${bucketName}" configuration to Public (public: true) so the catalog can serve public media.`
     );
   }
 
@@ -806,7 +806,7 @@ export function checkCatalogVisibilityWarning(
     (museum.status === 'draft' || museum.status === 'archived') &&
     productStatus === 'published'
   ) {
-    return `[Warning] Bảo tàng "${museum.name}" đang ở trạng thái "${museum.status}". Theo hợp đồng API, các sản phẩm published sẽ bị ẩn khỏi Public Catalog API (404) cho đến khi bảo tàng được chuyển sang "published".`;
+    return `[Warning] Museum "${museum.name}" is in "${museum.status}" status. Per API contract, published products will be hidden from the Public Catalog API (404) until the museum is transitioned to 'published'.`;
   }
   return null;
 }
@@ -925,6 +925,93 @@ export async function checkForeignKeyReferences(
     orderCount: referencedInOrders.length,
     referencedProductIds: [],
   };
+}
+
+/**
+ * Scoped, read-only foreign key pre-check: resolves existing target museums and verifies whether any
+ * existing managed souvenir products are referenced by cart_items or shop_order_items.
+ * Runs BEFORE any museum creation or admin membership writes to guarantee zero partial mutations.
+ */
+export async function precheckManagedSouvenirsForeignKeys(
+  definitions: MuseumSouvenirsDefinition[],
+  dbClient: any = db
+): Promise<ForeignKeyCheckResult> {
+  const targetSlugs = definitions.map((d) => d.museumSlug);
+  const targetNames = definitions.map((d) => d.museumName);
+
+  // 1. Read-only query for existing museums matching target slugs or names
+  const existingMuseums = await dbClient
+    .select({
+      id: museums.id,
+      slug: museums.slug,
+      name: museums.name,
+    })
+    .from(museums)
+    .where(
+      or(
+        inArray(museums.slug, targetSlugs),
+        inArray(museums.name, targetNames)
+      )
+    );
+
+  if (existingMuseums.length === 0) {
+    return {
+      hasReferences: false,
+      cartCount: 0,
+      orderCount: 0,
+      referencedProductIds: [],
+    };
+  }
+
+  // 2. Build scoped conditions matching each existing museum with its fixture SKUs
+  const targetConditions = existingMuseums
+    .map((museum: { id: string; slug: string; name: string }) => {
+      const def = definitions.find(
+        (d) => d.museumSlug === museum.slug || d.museumName === museum.name
+      );
+      const skus = def ? def.items.map((i) => i.sku) : [];
+      return skus.length > 0
+        ? and(
+            eq(souvenirProducts.museumId, museum.id),
+            inArray(souvenirProducts.sku, skus)
+          )
+        : null;
+    })
+    .filter((cond: any): cond is NonNullable<typeof cond> => cond !== null);
+
+  if (targetConditions.length === 0) {
+    return {
+      hasReferences: false,
+      cartCount: 0,
+      orderCount: 0,
+      referencedProductIds: [],
+    };
+  }
+
+  const whereClause =
+    targetConditions.length === 1
+      ? targetConditions[0]
+      : or(...targetConditions);
+
+  // 3. Read-only query for existing managed products in those museums
+  const existingProducts = await dbClient
+    .select({ id: souvenirProducts.id })
+    .from(souvenirProducts)
+    .where(whereClause);
+
+  if (existingProducts.length === 0) {
+    return {
+      hasReferences: false,
+      cartCount: 0,
+      orderCount: 0,
+      referencedProductIds: [],
+    };
+  }
+
+  const productIds = existingProducts.map((p: { id: string }) => p.id);
+
+  // 4. Verify no cart_items or shop_order_items reference these products
+  return checkForeignKeyReferences(productIds, dbClient);
 }
 
 export interface CleanExistingSouvenirsResult {
@@ -1248,7 +1335,8 @@ export async function run(
     `[seed:souvenirs] Starting orchestration with status="${config.status}", skipMedia=${config.skipMedia}, clean=${config.clean}...`
   );
 
-  // If clean requested, enforce safety environment guard
+  // If clean requested, enforce safety environment guard and run read-only foreign key pre-check
+  // BEFORE any museum creation or admin membership writes to guarantee zero partial changes.
   if (config.clean) {
     assertSafeCleanEnvironment({
       nodeEnv: deps.nodeEnv,
@@ -1257,6 +1345,8 @@ export async function run(
     console.log(
       '[seed:souvenirs] Safe clean environment verified (local/test host and explicit dev/test NODE_ENV).'
     );
+
+    await precheckManagedSouvenirsForeignKeys(SOUVENIR_FIXTURES, dbClient);
   }
 
   // 1. Storage Preflight
